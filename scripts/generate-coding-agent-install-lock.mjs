@@ -15,8 +15,15 @@ const internalPackagePrefix = "@earendil-works/pi-";
 const internalPackageNames = new Set(["@earendil-works/chord"]);
 const installPackageName = "@earendil-works/pi-coding-agent-install";
 const allowedInstallScriptPackages = new Map([
+	[
+		"@ast-grep/cli@0.51.0",
+		"postinstall only hardlinks or copies the matching installed native binary; no downloads or compilation; hydration still uses --ignore-scripts",
+	],
 	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
-	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
+	[
+		"protobufjs@7.6.6",
+		"postinstall only warns about protobufjs version scheme mismatches",
+	],
 ]);
 
 const args = new Set(process.argv.slice(2));
@@ -30,7 +37,11 @@ for (const arg of args) {
 }
 
 function readJson(path) {
-	return JSON.parse(readFileSync(path, "utf8"));
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		throw new Error(`Could not read valid JSON from ${path}`);
+	}
 }
 
 function packageDependencies(entry) {
@@ -41,7 +52,9 @@ function packageDependencies(entry) {
 }
 
 function sortedObject(object) {
-	return Object.fromEntries(Object.entries(object).sort(([a], [b]) => a.localeCompare(b)));
+	return Object.fromEntries(
+		Object.entries(object).sort(([a], [b]) => a.localeCompare(b)),
+	);
 }
 
 function sortedPackageEntry(entry) {
@@ -72,7 +85,9 @@ function sortedPackageEntry(entry) {
 			sorted[field] = entry[field];
 		}
 	}
-	for (const [field, value] of Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) {
+	for (const [field, value] of Object.entries(entry).sort(([a], [b]) =>
+		a.localeCompare(b),
+	)) {
 		if (sorted[field] === undefined) {
 			sorted[field] = value;
 		}
@@ -129,7 +144,9 @@ function packageNameFromLockPath(lockPath) {
 }
 
 function registryTarballUrl(packageName, version) {
-	const tarballName = packageName.startsWith("@") ? packageName.split("/")[1] : packageName;
+	const tarballName = packageName.startsWith("@")
+		? packageName.split("/")[1]
+		: packageName;
 	return `https://registry.npmjs.org/${packageName}/-/${tarballName}-${version}.tgz`;
 }
 
@@ -141,10 +158,18 @@ function getInternalWorkspaces(lockPackages) {
 	const workspaces = new Map();
 
 	for (const [lockPath, entry] of Object.entries(lockPackages)) {
-		if (!lockPath.startsWith("packages/") || lockPath.includes("/node_modules/") || !entry.name || !entry.version) {
+		if (
+			!lockPath.startsWith("packages/") ||
+			lockPath.includes("/node_modules/") ||
+			!entry.name ||
+			!entry.version
+		) {
 			continue;
 		}
-		if (!entry.name.startsWith(internalPackagePrefix) && !internalPackageNames.has(entry.name)) {
+		if (
+			!entry.name.startsWith(internalPackagePrefix) &&
+			!internalPackageNames.has(entry.name)
+		) {
 			continue;
 		}
 
@@ -173,7 +198,9 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 
 	const tried = new Set();
 	for (const directory of candidateDirs) {
-		const candidate = directory ? `${directory}/node_modules/${packageName}` : `node_modules/${packageName}`;
+		const candidate = directory
+			? `${directory}/node_modules/${packageName}`
+			: `node_modules/${packageName}`;
 		if (tried.has(candidate)) {
 			continue;
 		}
@@ -187,7 +214,10 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 
 	const suffix = `node_modules/${packageName}`;
 	const matches = Object.entries(lockPackages)
-		.filter(([lockPath, entry]) => !entry.link && (lockPath === suffix || lockPath.endsWith(`/${suffix}`)))
+		.filter(
+			([lockPath, entry]) =>
+				!entry.link && (lockPath === suffix || lockPath.endsWith(`/${suffix}`)),
+		)
 		.map(([lockPath]) => lockPath);
 
 	if (matches.length === 1) {
@@ -196,11 +226,19 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 
 	throw new Error(
 		`Cannot resolve ${packageName} from ${fromLockPath || "root"}. ` +
-			(matches.length > 1 ? `Matches: ${matches.join(", ")}` : "No matching lockfile entry found."),
+			(matches.length > 1
+				? `Matches: ${matches.join(", ")}`
+				: "No matching lockfile entry found."),
 	);
 }
 
-function addInternalWorkspace(installLockPackages, addedPaths, queue, name, workspace) {
+function addInternalWorkspace(
+	installLockPackages,
+	addedPaths,
+	queue,
+	name,
+	workspace,
+) {
 	const packageJson = workspace.packageJson;
 	const outputPath = `node_modules/${name}`;
 	const entry = copyPackageJsonEntry(packageJson, { includeName: false });
@@ -219,11 +257,23 @@ function addInternalWorkspace(installLockPackages, addedPaths, queue, name, work
 	}
 }
 
-function addExternalPackage(lockPackages, installLockPackages, addedPaths, queue, item) {
-	const sourceLockPath = resolveExternalDependency(lockPackages, item.name, item.sourceFrom);
+function addExternalPackage(
+	lockPackages,
+	installLockPackages,
+	addedPaths,
+	queue,
+	item,
+) {
+	const sourceLockPath = resolveExternalDependency(
+		lockPackages,
+		item.name,
+		item.sourceFrom,
+	);
 	const outputLockPath =
 		item.sourceBase && sourceLockPath.startsWith(`${item.sourceBase}/`)
-			? [item.outputBase, sourceLockPath.slice(item.sourceBase.length + 1)].filter(Boolean).join("/")
+			? [item.outputBase, sourceLockPath.slice(item.sourceBase.length + 1)]
+					.filter(Boolean)
+					.join("/")
 			: sourceLockPath;
 	if (addedPaths.has(outputLockPath)) {
 		return;
@@ -274,7 +324,11 @@ function createRootLockEntry(installerPackageJson) {
 	return sortedPackageEntry(entry);
 }
 
-function validateGeneratedFiles(installerPackageJson, installLock, internalNames) {
+function validateGeneratedFiles(
+	installerPackageJson,
+	installLock,
+	internalNames,
+) {
 	const errors = [];
 	const rootEntry = installLock.packages[""];
 	const includedPackageNames = new Set();
@@ -284,15 +338,22 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 		errors.push("package-lock.json must use lockfileVersion 3");
 	}
 	if (installLock.name !== installerPackageJson.name) {
-		errors.push(`lockfile name ${installLock.name} does not match package.json name ${installerPackageJson.name}`);
+		errors.push(
+			`lockfile name ${installLock.name} does not match package.json name ${installerPackageJson.name}`,
+		);
 	}
 	if (installLock.version !== installerPackageJson.version) {
 		errors.push(
 			`lockfile version ${installLock.version} does not match package.json version ${installerPackageJson.version}`,
 		);
 	}
-	if (JSON.stringify(rootEntry?.dependencies ?? {}) !== JSON.stringify(installerPackageJson.dependencies)) {
-		errors.push("lockfile root dependencies do not match package.json dependencies");
+	if (
+		JSON.stringify(rootEntry?.dependencies ?? {}) !==
+		JSON.stringify(installerPackageJson.dependencies)
+	) {
+		errors.push(
+			"lockfile root dependencies do not match package.json dependencies",
+		);
 	}
 
 	for (const [lockPath, entry] of Object.entries(installLock.packages)) {
@@ -303,7 +364,10 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 		if (entry.link) {
 			errors.push(`${lockPath} is a link entry`);
 		}
-		if (typeof entry.resolved === "string" && /^(file:|link:|workspace:|\.\.?\/|\/)/.test(entry.resolved)) {
+		if (
+			typeof entry.resolved === "string" &&
+			/^(file:|link:|workspace:|\.\.?\/|\/)/.test(entry.resolved)
+		) {
 			errors.push(`${lockPath} has a local resolved value: ${entry.resolved}`);
 		}
 		if (entry.dev || entry.devOptional || entry.extraneous) {
@@ -311,14 +375,19 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 		}
 		if (
 			packageName !== undefined &&
-			(packageName.startsWith(internalPackagePrefix) || internalPackageNames.has(packageName)) &&
+			(packageName.startsWith(internalPackagePrefix) ||
+				internalPackageNames.has(packageName)) &&
 			entry.version !== installerPackageJson.version
 		) {
-			errors.push(`${lockPath} internal package version ${entry.version} does not match ${installerPackageJson.version}`);
+			errors.push(
+				`${lockPath} internal package version ${entry.version} does not match ${installerPackageJson.version}`,
+			);
 		}
 		if (entry.hasInstallScript) {
 			if (!packageName || !entry.version) {
-				errors.push(`${lockPath || "root"} has install scripts but no package name/version`);
+				errors.push(
+					`${lockPath || "root"} has install scripts but no package name/version`,
+				);
 			} else {
 				const packageId = `${packageName}@${entry.version}`;
 				if (allowedInstallScriptPackages.has(packageId)) {
@@ -334,7 +403,9 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 
 	for (const packageId of allowedInstallScriptPackages.keys()) {
 		if (!seenAllowedInstallScriptPackages.has(packageId)) {
-			errors.push(`allowed install-script package ${packageId} is no longer present; remove it from the allowlist`);
+			errors.push(
+				`allowed install-script package ${packageId} is no longer present; remove it from the allowlist`,
+			);
 		}
 	}
 
@@ -345,17 +416,28 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 	}
 
 	for (const [lockPath, entry] of Object.entries(installLock.packages)) {
-		for (const [dependencyName, dependencySpec] of Object.entries(packageDependencies(entry))) {
+		for (const [dependencyName, dependencySpec] of Object.entries(
+			packageDependencies(entry),
+		)) {
 			let dependencyLockPath;
 			try {
-				dependencyLockPath = resolveExternalDependency(installLock.packages, dependencyName, lockPath);
+				dependencyLockPath = resolveExternalDependency(
+					installLock.packages,
+					dependencyName,
+					lockPath,
+				);
 			} catch {
-				errors.push(`${lockPath || "root"} dependency ${dependencyName} is missing`);
+				errors.push(
+					`${lockPath || "root"} dependency ${dependencyName} is missing`,
+				);
 				continue;
 			}
 
 			const dependencyEntry = installLock.packages[dependencyLockPath];
-			if (isExactVersionSpec(dependencySpec) && dependencyEntry.version !== dependencySpec) {
+			if (
+				isExactVersionSpec(dependencySpec) &&
+				dependencyEntry.version !== dependencySpec
+			) {
 				errors.push(
 					`${lockPath || "root"} dependency ${dependencyName}@${dependencySpec} resolves to ${dependencyEntry.version}`,
 				);
@@ -364,14 +446,18 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 	}
 
 	if (errors.length > 0) {
-		throw new Error(`Generated installer lock failed validation:\n${errors.map((error) => `  - ${error}`).join("\n")}`);
+		throw new Error(
+			`Generated installer lock failed validation:\n${errors.map((error) => `  - ${error}`).join("\n")}`,
+		);
 	}
 }
 
 function generateInstallLock() {
 	const rootLock = readJson(rootLockfilePath);
 	if (rootLock.lockfileVersion !== 3 || !rootLock.packages) {
-		throw new Error("package-lock.json must be lockfileVersion 3 and contain a packages map");
+		throw new Error(
+			"package-lock.json must be lockfileVersion 3 and contain a packages map",
+		);
 	}
 
 	const lockPackages = rootLock.packages;
@@ -383,10 +469,12 @@ function generateInstallLock() {
 	};
 	const addedPaths = new Set([""]);
 	const internalNames = new Set();
-	const queue = Object.keys(packageDependencies(installerPackageJson)).map((name) => ({
-		name,
-		sourceFrom: "",
-	}));
+	const queue = Object.keys(packageDependencies(installerPackageJson)).map(
+		(name) => ({
+			name,
+			sourceFrom: "",
+		}),
+	);
 
 	while (queue.length > 0) {
 		const item = queue.shift();
@@ -399,12 +487,24 @@ function generateInstallLock() {
 			const outputPath = `node_modules/${item.name}`;
 			internalNames.add(item.name);
 			if (!addedPaths.has(outputPath)) {
-				addInternalWorkspace(installLockPackages, addedPaths, queue, item.name, workspace);
+				addInternalWorkspace(
+					installLockPackages,
+					addedPaths,
+					queue,
+					item.name,
+					workspace,
+				);
 			}
 			continue;
 		}
 
-		addExternalPackage(lockPackages, installLockPackages, addedPaths, queue, item);
+		addExternalPackage(
+			lockPackages,
+			installLockPackages,
+			addedPaths,
+			queue,
+			item,
+		);
 	}
 
 	const installLock = {
@@ -426,13 +526,18 @@ try {
 
 	if (checkOnly) {
 		if (!existsSync(outputPackageJsonPath) || !existsSync(outputLockfilePath)) {
-			console.error("packages/coding-agent/install-lock is missing generated files.");
+			console.error(
+				"packages/coding-agent/install-lock is missing generated files.",
+			);
 			console.error("Run: npm run install-lock:coding-agent");
 			process.exit(1);
 		}
 		const currentPackageJson = readFileSync(outputPackageJsonPath, "utf8");
 		const currentLockfile = readFileSync(outputLockfilePath, "utf8");
-		if (currentPackageJson !== packageJsonContent || currentLockfile !== lockfileContent) {
+		if (
+			currentPackageJson !== packageJsonContent ||
+			currentLockfile !== lockfileContent
+		) {
 			console.error("packages/coding-agent/install-lock is out of date.");
 			console.error("Run: npm run install-lock:coding-agent");
 			process.exit(1);
@@ -443,8 +548,9 @@ try {
 		writeFileSync(outputPackageJsonPath, packageJsonContent);
 		writeFileSync(outputLockfilePath, lockfileContent);
 		const packageCount = Object.keys(installLock.packages).length - 1;
-		const platformPackageCount = Object.values(installLock.packages).filter((entry) => entry.os || entry.cpu || entry.libc)
-			.length;
+		const platformPackageCount = Object.values(installLock.packages).filter(
+			(entry) => entry.os || entry.cpu || entry.libc,
+		).length;
 		console.log(
 			`Wrote packages/coding-agent/install-lock/package.json and package-lock.json (${packageCount} packages, ${platformPackageCount} platform-specific).`,
 		);

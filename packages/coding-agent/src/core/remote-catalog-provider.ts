@@ -10,6 +10,7 @@ import {
 import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { getServiceDispatcher, getServiceProxy } from "./http-dispatcher.ts";
 
 const DEFAULT_CATALOG_BASE_URL = "https://pi.dev";
 const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 4_000;
@@ -80,18 +81,17 @@ function requestCatalog(
 ): Promise<Response> {
 	const url = new URL(`/api/models/providers/${encodeURIComponent(providerId)}`, catalogBaseUrl);
 	url.searchParams.set("types", REMOTE_CATALOG_MODEL_TYPES.join(","));
-	return fetchWithRetry(
-		url,
-		{
-			headers: {
-				accept: "application/json",
-				"User-Agent": getPiUserAgent(VERSION),
-				...(validator ? { "if-none-match": validator } : {}),
-			},
-			signal,
+	const init: RequestInit = {
+		headers: {
+			accept: "application/json",
+			"User-Agent": getPiUserAgent(VERSION),
+			...(validator ? { "if-none-match": validator } : {}),
 		},
-		{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS },
-	);
+		signal,
+	};
+	// Preserve host fetch overrides when no explicit model route is configured.
+	if (getServiceProxy("models") !== undefined) Object.assign(init, { dispatcher: getServiceDispatcher("models") });
+	return fetchWithRetry(url, init, { attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS });
 }
 
 /** Replaces the catalog with a credential-specific model list. */

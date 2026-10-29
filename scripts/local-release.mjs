@@ -20,7 +20,7 @@ Options:
   --out <dir>          Output directory. Defaults to a new directory under ${tmpdir()}
   --force              Remove --out first if it already exists
   --skip-check         Do not run npm run check before building
-  --skip-test          Do not run ./test.sh after building
+  --skip-test          Do not run ./scripts/test.sh after building
   --skip-install       Only create the artifact set; do not create isolated installs
   --skip-bun-install   Do not create the isolated Bun install
   --help               Show this help
@@ -109,7 +109,7 @@ const binaryDirectory = join(outDir, "bun");
 const nodeInstallDirectory = join(outDir, "node");
 const bunInstallDirectory = join(outDir, "bun-install");
 
-if (!options.skipTest) execFileSync("bash", ["./test.sh"], { cwd: repoRoot, stdio: "inherit" });
+if (!options.skipTest) execFileSync("bash", ["./scripts/test.sh"], { cwd: repoRoot, stdio: "inherit" });
 
 let binaryPlatform;
 if (!options.skipInstall) {

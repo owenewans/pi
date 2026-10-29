@@ -112,9 +112,7 @@
 	},
 	"sideEffects": false,
 	"files": [
-		"dist",
-		"README.md",
-		"CHANGELOG.md"
+		"dist"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",

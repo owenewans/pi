@@ -308,7 +308,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
 			const transport = options?.transport || "auto";
 			let startEmitted = false;
-			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
+			// The native WebSocket constructor cannot guarantee the configured proxy route.
+			// SSE uses the shared HTTP dispatcher and never reuses a direct socket after a route change.
+			const proxied = !!resolveHttpProxyUrlForTarget(resolveCodexUrl(model.baseUrl), options?.env);
+			if (proxied && cacheSessionId) closeOpenAICodexWebSocketSessions(cacheSessionId);
+			const websocketDisabledForSession =
+				transport !== "sse" && (proxied || isWebSocketSseFallbackActive(cacheSessionId));
 			if (websocketDisabledForSession) {
 				recordWebSocketSseFallback(cacheSessionId);
 			}

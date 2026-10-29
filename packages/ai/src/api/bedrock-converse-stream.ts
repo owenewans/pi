@@ -1,4 +1,3 @@
-import type { Agent as HttpsAgent } from "node:https";
 import {
 	BedrockRuntimeClient,
 	type BedrockRuntimeClientConfig,
@@ -24,8 +23,7 @@ import {
 } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { BuildMiddleware, DeserializeMiddleware, DocumentType, HttpResponse, MetadataBearer } from "@smithy/types";
-import { HttpProxyAgent } from "http-proxy-agent";
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { createProviderProxyAgents } from "../internal/node-proxy-agents.ts";
 import { calculateCost } from "../models.ts";
 import type {
 	Api,
@@ -55,7 +53,6 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
-import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -218,20 +215,6 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (!skipAuth && credentials && !optionsProfile) {
 				config.credentials = credentials;
 			}
-
-			const proxyUrl = resolveHttpProxyUrlForTarget(model.baseUrl, options.env);
-			if (proxyUrl) {
-				// Bedrock runtime uses NodeHttp2Handler by default since v3.798.0, which is based
-				// on `http2` module and has no support for http agent.
-				// Use NodeHttpHandler to support HTTP(S) proxy agents.
-				config.requestHandler = new NodeHttpHandler({
-					httpAgent: new HttpProxyAgent(proxyUrl),
-					httpsAgent: new HttpsProxyAgent(proxyUrl) as unknown as HttpsAgent,
-				});
-			} else if (getProviderEnvValue("AWS_BEDROCK_FORCE_HTTP1", options.env) === "1") {
-				// Some custom endpoints require HTTP/1.1 instead of HTTP/2
-				config.requestHandler = new NodeHttpHandler();
-			}
 		} else {
 			// Non-Node environment (browser): fall back to us-east-1 since
 			// there's no config file resolution available.
@@ -249,6 +232,14 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		let responseRequestId: string | undefined;
 
 		try {
+			if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
+				const proxyAgents = createProviderProxyAgents(model.baseUrl, options.env);
+				// smithy's default HTTP/2 transport does not use Node proxy agents.
+				if (proxyAgents) config.requestHandler = new NodeHttpHandler(proxyAgents);
+				else if (getProviderEnvValue("AWS_BEDROCK_FORCE_HTTP1", options.env) === "1") {
+					config.requestHandler = new NodeHttpHandler();
+				}
+			}
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
 			const client = new BedrockRuntimeClient(config);
 			let observedRawResponse = false;
@@ -1170,7 +1161,8 @@ function convertToolConfig(
 			toolSpec: {
 				name: tool.name,
 				description: tool.description,
-				inputSchema: { json: getJsonSchemaToolParameters(tool, strict) as unknown as DocumentType },
+				// SAFETY: tool parameter schemas are JSON data; Smithy's recursive type cannot express TypeBox schemas.
+				inputSchema: { json: getJsonSchemaToolParameters(tool, strict) as DocumentType },
 				...(strict === true ? { strict: true } : {}),
 			},
 		};
@@ -1273,7 +1265,7 @@ function isGovCloudBedrockTarget(model: Model<"bedrock-converse-stream">, option
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
-): Record<string, any> | undefined {
+): Record<string, DocumentType> | undefined {
 	if (!options.reasoning || !model.reasoning) {
 		return undefined;
 	}
@@ -1287,7 +1279,7 @@ function buildAdditionalModelRequestFields(
 		// created with. Bedrock 400s on replay after either changes unless stale blocks are
 		// dropped, matching the Anthropic provider. Skipped on GovCloud like display.
 		const useBlockBinding = !isGovCloud && supportsThinkingBlockBinding(model);
-		const result: Record<string, any> = supportsAdaptiveThinking(model.id, model.name)
+		const result: Record<string, DocumentType> = supportsAdaptiveThinking(model.id, model.name)
 			? {
 					thinking: {
 						type: "adaptive",

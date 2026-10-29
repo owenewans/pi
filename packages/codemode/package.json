@@ -38,8 +38,7 @@
 		}
 	},
 	"files": [
-		"dist",
-		"README.md"
+		"dist"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",

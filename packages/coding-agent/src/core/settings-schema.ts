@@ -280,13 +280,13 @@ export const SettingsSchema = Type.Object(
 		),
 		collapseChangelog: Type.Optional(
 			Type.Boolean({
-				description: "Show the condensed changelog after update; use /changelog for the full changelog.",
+				description: "Show condensed extension changelogs after package updates.",
 				default: SETTINGS_DEFAULTS.collapseChangelog,
 			}),
 		),
 		enableInstallTelemetry: Type.Optional(
 			Type.Boolean({
-				description: "Send an anonymous version and update ping after changelog-detected updates.",
+				description: "Send an anonymous version ping after installation or update.",
 				default: SETTINGS_DEFAULTS.enableInstallTelemetry,
 			}),
 		),
@@ -392,7 +392,28 @@ export const SettingsSchema = Type.Object(
 			}),
 		),
 		httpProxy: Type.Optional(
-			Type.String({ description: "Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients." }),
+			Type.String({
+				description:
+					"Shared HTTP, HTTPS, SOCKS5 or SOCKS5h proxy URL. Credentials stay in memory, not child environments.",
+			}),
+		),
+		proxyOverrides: Type.Optional(
+			Type.Object(
+				{
+					providers: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+					browser: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+					web: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+					telegram: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+					context7: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+					usage: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+					models: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+				},
+				{
+					additionalProperties: false,
+					description:
+						"Per-service proxy URLs; false explicitly routes that service directly. Failures never trigger direct fallback. Global only.",
+				},
+			),
 		),
 		httpIdleTimeoutMs: Type.Optional(
 			timeoutSetting({

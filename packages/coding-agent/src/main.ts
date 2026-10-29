@@ -63,7 +63,9 @@ import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
+import { runTelegramService } from "./extensions/telegram/service.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { runAcp } from "./modes/acp/index.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
@@ -582,10 +584,6 @@ export async function main(args: string[], options?: MainOptions) {
 		process.env.PI_SKIP_VERSION_CHECK = "1";
 	}
 
-	if (await runAuthCommand(args)) {
-		return;
-	}
-
 	if (process.platform === "win32") {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	}
@@ -594,8 +592,34 @@ export async function main(args: string[], options?: MainOptions) {
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
+	applyHttpProxySettings(
+		bootstrapSettingsManager.getGlobalSettings().httpProxy,
+		bootstrapSettingsManager.getGlobalSettings().proxyOverrides,
+	);
 	configureHttpDispatcher();
+
+	if (args[0] === "telegram-service") {
+		if (args.length !== 1) throw new Error("Usage: pi telegram-service");
+		process.exitCode = await runTelegramService();
+		if (process.exitCode !== 0)
+			console.error(
+				"Telegram service failed; check its Python environment, account login and session lock. See docs/telegram.md.",
+			);
+		return;
+	}
+
+	if (args[0] === "acp") {
+		if (args.length === 2 && args[1] === "--terminal-login") args = [];
+		else {
+			if (args.length !== 1) throw new Error("Usage: pi acp");
+			await runAcp();
+			return;
+		}
+	}
+
+	if (await runAuthCommand(args)) {
+		return;
+	}
 
 	if (await handlePackageCommand(args, { extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;
@@ -872,7 +896,10 @@ export async function main(args: string[], options?: MainOptions) {
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
-	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
+	applyHttpProxySettings(
+		settingsManager.getGlobalSettings().httpProxy,
+		settingsManager.getGlobalSettings().proxyOverrides,
+	);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
 	if (parsed.help) {

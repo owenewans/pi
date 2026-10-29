@@ -9,7 +9,7 @@
  * Steps:
  * 1. Check for uncommitted changes
  * 2. Verify every public workspace package is registered on npm,
- *    pin the newest model catalog for Nix, and build with it
+ *    pin the newest model catalog for offline builds, and build with it
  * 3. Bump version via npm run version:xxx or set an explicit version
  * 4. Update CHANGELOG.md files: [Unreleased] -> [version] - date
  * 5. Regenerate release artifacts
@@ -86,11 +86,11 @@ function assertPackagesAreRegisteredWithNpm() {
 	console.log("  All public workspace packages are registered on npm\n");
 }
 
-const MODEL_CATALOG_PIN = "nix/model-catalog.json";
+const MODEL_CATALOG_PIN = "scripts/model-catalog-pin.json";
 
-// Release tags are immutable, so the tagged Nix pin must already build the
+// Release tags are immutable, so the tagged catalog pin must already build the
 // release. Pin the newest catalog unconditionally (`--if-stale` only avoids pin
-// churn on main), then run the Nix build's steps: hydrate the checkout's model
+// churn on main), then run the offline build's steps: hydrate the checkout's model
 // data from it and build offline. This catches e.g. source that references a
 // model the catalog lacks. On failure, restore the committed pin so the
 // worktree is clean for a rerun.
@@ -119,7 +119,7 @@ async function pinAndBuildWithNewestModelCatalog() {
 	}
 	if (result.status !== 0) {
 		console.error(
-			`Error: the build with the newest published model catalog ${revision} failed; the Nix build of the release tag would fail too.\n` +
+			`Error: the build with the newest published model catalog ${revision} failed; the offline build of the release tag would fail too.\n` +
 				"If the errors concern model IDs, types, or APIs, the catalog predates main: publish one from main (Publish Model Catalog workflow).\n" +
 				"Otherwise fix the build (e.g. run `npm ci --ignore-scripts` if node_modules is out of date).\n" +
 				restored,
@@ -268,9 +268,9 @@ console.log("  Working directory clean\n");
 // 2. Verify npm package registration before modifying the worktree.
 assertPackagesAreRegisteredWithNpm();
 
-// Pin and verify the Nix model catalog before modifying versions, so the pin
+// Pin and verify the offline model catalog before modifying versions, so the pin
 // lands in the release commit and a failure leaves the worktree clean.
-console.log("Pinning and building with the newest model catalog for Nix...");
+console.log("Pinning and building with the newest model catalog for offline builds...");
 await pinAndBuildWithNewestModelCatalog();
 console.log();
 
@@ -305,7 +305,7 @@ if (process.env.PI_RELEASE_SKIP_TESTS === "1") {
 	console.log("Skipping tests (PI_RELEASE_SKIP_TESTS=1)\n");
 } else {
 	console.log("Running tests...");
-	run("./test.sh");
+	run("./scripts/test.sh");
 	console.log();
 }
 

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const googleGenAiMock = vi.hoisted(() => ({
@@ -49,6 +52,7 @@ import { stream as streamGoogleVertex } from "../src/api/google-vertex.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 import { formatUserAgent } from "../src/utils/identity.ts";
+import { setProviderProxy } from "../src/utils/proxy-routing.ts";
 
 const PI_USER_AGENT = formatUserAgent();
 const model = getModel("google-vertex", "gemini-3-flash-preview");
@@ -64,6 +68,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	setProviderProxy(undefined);
 	if (originalGoogleCloudApiKey === undefined) {
 		delete process.env.GOOGLE_CLOUD_API_KEY;
 	} else {
@@ -72,6 +77,69 @@ afterEach(() => {
 });
 
 describe("google-vertex api key resolution", () => {
+	it("routes file-based ADC through the configured proxy", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-vertex-auth-"));
+		try {
+			const file = join(dir, "credentials.json");
+			writeFileSync(file, JSON.stringify({ type: "authorized_user", client_id: "fixture" }));
+			setProviderProxy("socks5h://127.0.0.1:1");
+			await streamGoogleVertex(model, context, {
+				project: "fixture",
+				location: "fixture",
+				env: { GOOGLE_APPLICATION_CREDENTIALS: file },
+			}).result();
+			const config = googleGenAiMock.constructorCalls[0] as {
+				googleAuthOptions: {
+					projectId: string;
+					credentials: { type: string };
+					clientOptions: { transporterOptions: { agent: (url: URL) => object } };
+				};
+			};
+			expect(config.googleAuthOptions.projectId).toBe("fixture");
+			expect(config.googleAuthOptions.credentials.type).toBe("authorized_user");
+			expect(
+				config.googleAuthOptions.clientOptions.transporterOptions.agent(new URL("https://oauth2.googleapis.com")),
+			).toBeDefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects unsupported ADC sources before any direct metadata request", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-vertex-auth-"));
+		try {
+			const file = join(dir, "credentials.json");
+			writeFileSync(file, JSON.stringify({ type: "external_account" }));
+			setProviderProxy("socks5h://127.0.0.1:1");
+			const result = await streamGoogleVertex(model, context, {
+				project: "fixture",
+				location: "fixture",
+				env: { GOOGLE_APPLICATION_CREDENTIALS: file },
+			}).result();
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toContain("supports authorized_user and service_account");
+			expect(googleGenAiMock.constructorCalls).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	it("does not probe metadata when the configured credential file is missing", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-vertex-missing-"));
+		try {
+			setProviderProxy("socks5h://127.0.0.1:1");
+			const result = await streamGoogleVertex(model, context, {
+				project: "fixture",
+				location: "fixture",
+				env: { GOOGLE_APPLICATION_CREDENTIALS: join(dir, "missing.json") },
+			}).result();
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toContain("credentials file is unavailable or invalid");
+			expect(googleGenAiMock.constructorCalls).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("falls back to ADC when options.apiKey is a placeholder marker", async () => {
 		const stream = streamGoogleVertex(model, context, {
 			apiKey: "<authenticated>",

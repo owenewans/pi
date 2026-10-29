@@ -26,8 +26,10 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 export interface RpcClientOptions {
-	/** Path to the CLI entry point (default: searches for dist/cli.js) */
-	cliPath?: string;
+	/** Path to the CLI entry point, or false for a standalone executable. */
+	cliPath?: string | false;
+	/** Executable used to launch the CLI. Defaults to node. */
+	command?: string;
 	/** Working directory for the agent */
 	cwd?: string;
 	/** Environment variables */
@@ -57,6 +59,7 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private exitListeners: Array<(error: Error) => void> = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -91,7 +94,7 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const childProcess = spawn("node", [cliPath, ...args], {
+		const childProcess = spawn(this.options.command ?? "node", cliPath === false ? args : [cliPath, ...args], {
 			cwd: this.options.cwd,
 			env: { ...process.env, ...this.options.env },
 			stdio: ["pipe", "pipe", "pipe"],
@@ -107,21 +110,18 @@ export class RpcClient {
 		childProcess.once("exit", (code, signal) => {
 			if (this.process !== childProcess) return;
 			const error = this.createProcessExitError(code, signal);
-			this.exitError = error;
-			this.rejectPendingRequests(error);
+			this.reportExit(error);
 		});
 		childProcess.once("error", (error) => {
 			if (this.process !== childProcess) return;
 			const processError = new Error(`Agent process error: ${error.message}. Stderr: ${this.stderr}`);
-			this.exitError = processError;
-			this.rejectPendingRequests(processError);
+			this.reportExit(processError);
 		});
 		childProcess.stdin?.on("error", (error) => {
 			if (this.process !== childProcess) return;
 			const stdinError =
 				this.exitError ?? new Error(`Agent process stdin error: ${error.message}. Stderr: ${this.stderr}`);
-			this.exitError = stdinError;
-			this.rejectPendingRequests(stdinError);
+			this.reportExit(stdinError);
 		});
 
 		// Set up strict JSONL reader for stdout.
@@ -132,9 +132,11 @@ export class RpcClient {
 		// Wait a moment for process to initialize
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
-		if (this.process.exitCode !== null) {
-			const error = this.exitError ?? this.createProcessExitError(this.process.exitCode, this.process.signalCode);
-			this.exitError = error;
+		if (this.process !== childProcess) throw new Error("Client stopped during startup");
+		if (this.exitError) throw this.exitError;
+		if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
+			const error = this.createProcessExitError(childProcess.exitCode, childProcess.signalCode);
+			this.reportExit(error);
 			throw error;
 		}
 	}
@@ -143,27 +145,24 @@ export class RpcClient {
 	 * Stop the RPC agent process.
 	 */
 	async stop(): Promise<void> {
-		if (!this.process) return;
-
+		const child = this.process;
+		if (!child) return;
+		this.process = null;
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
-		this.process.kill("SIGTERM");
-
-		// Wait for process to exit
+		this.reportExit(new Error("Agent client stopped"));
+		if (child.exitCode !== null || child.signalCode !== null) return;
 		await new Promise<void>((resolve) => {
 			const timeout = setTimeout(() => {
-				this.process?.kill("SIGKILL");
+				child.kill("SIGKILL");
 				resolve();
 			}, 1000);
-
-			this.process?.on("exit", () => {
+			child.once("exit", () => {
 				clearTimeout(timeout);
 				resolve();
 			});
+			child.stdin?.end();
 		});
-
-		this.process = null;
-		this.pendingRequests.clear();
 	}
 
 	/**
@@ -176,6 +175,15 @@ export class RpcClient {
 			if (index !== -1) {
 				this.eventListeners.splice(index, 1);
 			}
+		};
+	}
+
+	/** Subscribe to unexpected child exit or failure. */
+	onExit(listener: (error: Error) => void): () => void {
+		this.exitListeners.push(listener);
+		if (this.exitError) listener(this.exitError);
+		return () => {
+			this.exitListeners = this.exitListeners.filter((item) => item !== listener);
 		};
 	}
 
@@ -544,6 +552,13 @@ export class RpcClient {
 
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
+	}
+
+	private reportExit(error: Error): void {
+		if (this.exitError) return;
+		this.exitError = error;
+		this.rejectPendingRequests(error);
+		for (const listener of [...this.exitListeners]) listener(error);
 	}
 
 	private rejectPendingRequests(error: Error): void {

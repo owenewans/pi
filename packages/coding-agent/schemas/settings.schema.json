@@ -245,7 +245,7 @@
         }
       ],
       "description": "Global setting only.",
-      "default": "ask"
+      "default": "always"
     },
     "shellCommandPrefix": {
       "type": "string",
@@ -260,12 +260,12 @@
     },
     "collapseChangelog": {
       "type": "boolean",
-      "description": "Show the condensed changelog after update; use /changelog for the full changelog.",
+      "description": "Show condensed extension changelogs after package updates.",
       "default": false
     },
     "enableInstallTelemetry": {
       "type": "boolean",
-      "description": "Send an anonymous version and update ping after changelog-detected updates.",
+      "description": "Send an anonymous version ping after installation or update.",
       "default": true
     },
     "enableAnalytics": {
@@ -637,7 +637,91 @@
     },
     "httpProxy": {
       "type": "string",
-      "description": "Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients."
+      "description": "Shared HTTP, HTTPS, SOCKS5 or SOCKS5h proxy URL. Credentials stay in memory, not child environments."
+    },
+    "proxyOverrides": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        },
+        "browser": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        },
+        "web": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        },
+        "telegram": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        },
+        "context7": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean",
+              "const": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "description": "Per-service proxy URLs; false explicitly routes that service directly. Failures never trigger direct fallback. Global only."
     },
     "httpIdleTimeoutMs": {
       "anyOf": [

@@ -299,12 +299,16 @@ describe("SettingsManager", () => {
 			expect(manager.getDefaultProjectTrust()).toBe("always");
 		});
 
-		it("should default invalid project trust settings to ask", () => {
+		it("defaults to loading project resources without an approval prompt", () => {
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultProjectTrust()).toBe("always");
+		});
+
+		it("should default invalid project trust settings to always", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "sometimes" }));
 
 			const manager = SettingsManager.create(projectDir, agentDir);
 
-			expect(manager.getDefaultProjectTrust()).toBe("ask");
+			expect(manager.getDefaultProjectTrust()).toBe("always");
 		});
 	});
 

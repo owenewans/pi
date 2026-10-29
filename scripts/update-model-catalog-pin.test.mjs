@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, mock, test } from "node:test";
-import { updateModelCatalogPin } from "./update-model-catalog-pin.mjs";
+import {
+	hydratePinnedModelCatalog,
+	updateModelCatalogPin,
+} from "./update-model-catalog-pin.mjs";
 
 const model = {
 	type: "chat",
@@ -20,7 +29,8 @@ const model = {
 	maxTokens: 100,
 };
 const catalog = (models) => `${JSON.stringify({ "test-provider": models })}\n`;
-const revisionOf = (body) => `sha256-${createHash("sha256").update(body).digest("hex")}`;
+const revisionOf = (body) =>
+	`sha256-${createHash("sha256").update(body).digest("hex")}`;
 const pinFile = (revision) => `${JSON.stringify({ revision }, null, 2)}\n`;
 const pinned = async (promise) => {
 	const { bytes, ...result } = await promise;
@@ -36,7 +46,12 @@ const currentRevision = revisionOf(currentBody);
 const staleBody = `${JSON.stringify({ "other-provider": [model] })}\n`;
 const staleRevision = revisionOf(staleBody);
 // Hydrates, but lacks a model type the live catalog (generated from main) has.
-const classifier = { ...model, type: "classifier", id: "classifier-a", name: "Classifier A" };
+const classifier = {
+	...model,
+	type: "classifier",
+	id: "classifier-a",
+	name: "Classifier A",
+};
 delete classifier.reasoning;
 delete classifier.maxTokens;
 const classifierBody = catalog([model, classifier]);
@@ -57,13 +72,19 @@ let root;
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "pi-catalog-pin-"));
 	mkdirSync(join(root, "packages/ai/src/providers"), { recursive: true });
-	mkdirSync(join(root, "nix"));
+	mkdirSync(join(root, "scripts"));
 	writeFileSync(
 		join(root, "packages/ai/src/models.generated.ts"),
 		'import { TEST_PROVIDER_CLASSIFIER_MODELS, TEST_PROVIDER_IMAGE_MODELS, TEST_PROVIDER_MODELS } from "./providers/test-provider.models.ts";\n',
 	);
-	writeFileSync(join(root, "packages/ai/src/providers/test-provider.models.ts"), "");
-	writeFileSync(join(root, "nix/model-catalog.json"), pinFile(currentRevision));
+	writeFileSync(
+		join(root, "packages/ai/src/providers/test-provider.models.ts"),
+		"",
+	);
+	writeFileSync(
+		join(root, "scripts/model-catalog-pin.json"),
+		pinFile(currentRevision),
+	);
 });
 afterEach(() => {
 	mock.restoreAll();
@@ -71,7 +92,7 @@ afterEach(() => {
 });
 
 function readPin() {
-	return readFileSync(join(root, "nix/model-catalog.json"), "utf8");
+	return readFileSync(join(root, "scripts/model-catalog-pin.json"), "utf8");
 }
 
 function mockPiDev({ live = liveRevision, failure } = {}) {
@@ -81,19 +102,30 @@ function mockPiDev({ live = liveRevision, failure } = {}) {
 		const revision = /\/revisions\/(sha256-[0-9a-f]+)\?/.exec(url)?.[1];
 		if (revision) {
 			if (failure === "revision-http") return new Response(null, { status: 503 });
-			return new Response(failure === "revision-hash" ? "wrong" : bodies.get(revision));
+			return new Response(
+				failure === "revision-hash" ? "wrong" : bodies.get(revision),
+			);
 		}
 		if (failure === "discovery-http") return new Response(null, { status: 503 });
-		return new Response(failure === "discovery-hash" ? "wrong" : bodies.get(live), {
-			headers: { "x-pi-model-catalog-revision": failure === "discovery-revision" ? "latest" : live },
-		});
+		return new Response(
+			failure === "discovery-hash" ? "wrong" : bodies.get(live),
+			{
+				headers: {
+					"x-pi-model-catalog-revision":
+						failure === "discovery-revision" ? "latest" : live,
+				},
+			},
+		);
 	});
 	return requests;
 }
 
 test("pins the newest typed catalog after verifying its immutable URL", async () => {
 	const requests = mockPiDev();
-	assert.deepEqual(await pinned(updateModelCatalogPin(root)), { revision: liveRevision, updated: true });
+	assert.deepEqual(await pinned(updateModelCatalogPin(root)), {
+		revision: liveRevision,
+		updated: true,
+	});
 	// No pi-version: main's version is the last release, which pi.dev answers
 	// with the catalog for released clients (#10985).
 	assert.deepEqual(requests, [
@@ -105,10 +137,13 @@ test("pins the newest typed catalog after verifying its immutable URL", async ()
 
 test("keeps a pin that still hydrates the checkout and has the live model groups", async () => {
 	const requests = mockPiDev();
-	assert.deepEqual(await pinned(updateModelCatalogPin(root, { ifStale: true })), {
-		revision: currentRevision,
-		updated: false,
-	});
+	assert.deepEqual(
+		await pinned(updateModelCatalogPin(root, { ifStale: true })),
+		{
+			revision: currentRevision,
+			updated: false,
+		},
+	);
 	assert.deepEqual(requests, [
 		`https://pi.dev/api/models/revisions/${currentRevision}?${typed}`,
 		`https://pi.dev/api/models?${typed}`,
@@ -121,10 +156,13 @@ test("replaces a pin that lacks a model type of the live catalog", async (t) => 
 	const errors = [];
 	t.mock.method(console, "error", (message) => errors.push(message));
 	mockPiDev({ live: classifierRevision });
-	assert.deepEqual(await pinned(updateModelCatalogPin(root, { ifStale: true })), {
-		revision: classifierRevision,
-		updated: true,
-	});
+	assert.deepEqual(
+		await pinned(updateModelCatalogPin(root, { ifStale: true })),
+		{
+			revision: classifierRevision,
+			updated: true,
+		},
+	);
 	assert.equal(readPin(), pinFile(classifierRevision));
 	assert.deepEqual(errors, [
 		"Pinned model catalog is stale: model groups differ (missing test-provider/classifier/openai-completions)",
@@ -135,9 +173,15 @@ test("replaces a pin that lacks a model type of the live catalog", async (t) => 
 test("replaces a pin whose provider uses a different API than the live catalog", async (t) => {
 	const errors = [];
 	t.mock.method(console, "error", (message) => errors.push(message));
-	writeFileSync(join(root, "nix/model-catalog.json"), pinFile(switchedRevision));
+	writeFileSync(
+		join(root, "scripts/model-catalog-pin.json"),
+		pinFile(switchedRevision),
+	);
 	mockPiDev();
-	assert.deepEqual(await pinned(updateModelCatalogPin(root, { ifStale: true })), { revision: liveRevision, updated: true });
+	assert.deepEqual(
+		await pinned(updateModelCatalogPin(root, { ifStale: true })),
+		{ revision: liveRevision, updated: true },
+	);
 	assert.equal(readPin(), pinFile(liveRevision));
 	assert.deepEqual(errors, [
 		"Pinned model catalog is stale: model groups differ (missing test-provider/chat/openai-completions; extra test-provider/chat/anthropic-messages)",
@@ -146,19 +190,34 @@ test("replaces a pin whose provider uses a different API than the live catalog",
 
 test("replaces a pin that no longer hydrates the checkout", async (t) => {
 	t.mock.method(console, "error", () => {});
-	writeFileSync(join(root, "nix/model-catalog.json"), pinFile(staleRevision));
+	writeFileSync(
+		join(root, "scripts/model-catalog-pin.json"),
+		pinFile(staleRevision),
+	);
 	mockPiDev();
-	assert.deepEqual(await pinned(updateModelCatalogPin(root, { ifStale: true })), { revision: liveRevision, updated: true });
+	assert.deepEqual(
+		await pinned(updateModelCatalogPin(root, { ifStale: true })),
+		{ revision: liveRevision, updated: true },
+	);
 	assert.equal(readPin(), pinFile(liveRevision));
 });
 
 test("refuses to pin a live catalog that cannot hydrate the checkout", async () => {
 	mockPiDev({ live: staleRevision });
-	await assert.rejects(updateModelCatalogPin(root), /cannot hydrate this checkout/);
+	await assert.rejects(
+		updateModelCatalogPin(root),
+		/cannot hydrate this checkout/,
+	);
 	assert.equal(readPin(), pinFile(currentRevision));
 });
 
-for (const failure of ["discovery-http", "discovery-revision", "discovery-hash", "revision-http", "revision-hash"]) {
+for (const failure of [
+	"discovery-http",
+	"discovery-revision",
+	"discovery-hash",
+	"revision-http",
+	"revision-hash",
+]) {
 	test(`keeps the old pin on ${failure} failure`, async () => {
 		mockPiDev({ failure });
 		await assert.rejects(updateModelCatalogPin(root));
@@ -166,8 +225,52 @@ for (const failure of ["discovery-http", "discovery-revision", "discovery-hash",
 	});
 }
 
+test("hydrates the exact pinned catalog without contacting provider APIs or live discovery", async () => {
+	const requests = mockPiDev();
+	assert.equal(await hydratePinnedModelCatalog(root), currentRevision);
+	assert.deepEqual(requests, [
+		`https://pi.dev/api/models/revisions/${currentRevision}?${typed}`,
+	]);
+	assert.equal(readPin(), pinFile(currentRevision));
+	const data = JSON.parse(
+		readFileSync(
+			join(root, "packages/ai/src/providers/data/test-provider.json"),
+			"utf8",
+		),
+	);
+	assert.ok(JSON.stringify(data).includes("model-a"));
+	assert.ok(!JSON.stringify(data).includes("model-b"));
+});
+
+for (const value of ["not json", pinFile("latest")]) {
+	test(`refuses invalid hydration pin ${JSON.stringify(value)}`, async () => {
+		writeFileSync(join(root, "scripts/model-catalog-pin.json"), value);
+		const requests = mockPiDev();
+		await assert.rejects(hydratePinnedModelCatalog(root));
+		assert.deepEqual(requests, []);
+	});
+}
+
+for (const failure of ["revision-http", "revision-hash"]) {
+	test(`preserves existing model data after ${failure}`, async () => {
+		mockPiDev();
+		await hydratePinnedModelCatalog(root);
+		const dataPath = join(
+			root,
+			"packages/ai/src/providers/data/test-provider.json",
+		);
+		const previous = readFileSync(dataPath, "utf8");
+		mockPiDev({ failure });
+		await assert.rejects(hydratePinnedModelCatalog(root));
+		assert.equal(readFileSync(dataPath, "utf8"), previous);
+	});
+}
+
 test("does not treat an unreachable pinned revision as stale", async () => {
 	mockPiDev({ failure: "revision-http" });
-	await assert.rejects(updateModelCatalogPin(root, { ifStale: true }), /unavailable/);
+	await assert.rejects(
+		updateModelCatalogPin(root, { ifStale: true }),
+		/unavailable/,
+	);
 	assert.equal(readPin(), pinFile(currentRevision));
 });

@@ -368,7 +368,7 @@ export function getUpdateInstruction(packageName: string): string {
 // =============================================================================
 
 /**
- * Get the base directory for resolving package assets (themes, package.json, README.md, CHANGELOG.md).
+ * Get the base directory for resolving package assets (themes, package.json and docs).
  * - For Bun binary: returns the directory containing the executable
  * - For Node.js: returns the package root containing package.json
  * - Ignores Bun binary metadata copied into dist/ when the package root is available
@@ -440,9 +440,28 @@ export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");
 }
 
-/** Get path to README.md */
-export function getReadmePath(): string {
-	return resolve(join(getPackageDir(), "README.md"));
+/** Gets the bundled default skills directory in source and release installations. */
+export function getBundledSkillsPath(): string {
+	return join(getPackageDir(), "skills");
+}
+
+/** Resolve the bundled Telegram service launcher. */
+export function getTelegramServiceScriptPath(): string {
+	return join(getPackageDir(), "scripts", "telegram-service.py");
+}
+
+/** Resolve the pinned AST engine in source, npm and standalone installations. */
+export function getAstGrepPath(): string {
+	if (process.env.AST_GREP_PATH) return expandTildePath(process.env.AST_GREP_PATH);
+	if (isBunBinary) return join(getPackageDir(), "ast-grep");
+	if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")) {
+		throw new Error("The bundled AST engine requires Linux x64 or arm64; set AST_GREP_PATH for another build");
+	}
+	try {
+		return createRequire(getPackageJsonPath()).resolve(`@ast-grep/cli-linux-${process.arch}-gnu/ast-grep`);
+	} catch {
+		throw new Error("The pinned AST engine is missing; install optional dependencies or set AST_GREP_PATH");
+	}
 }
 
 /** Get path to docs directory */
@@ -453,11 +472,6 @@ export function getDocsPath(): string {
 /** Get path to examples directory */
 export function getExamplesPath(): string {
 	return resolve(join(getPackageDir(), "examples"));
-}
-
-/** Get path to CHANGELOG.md */
-export function getChangelogPath(): string {
-	return resolve(join(getPackageDir(), "CHANGELOG.md"));
 }
 
 /**

@@ -478,8 +478,11 @@ function launchCommand(remote: RemotePlatform, file: string, loginShell: boolean
 		if (remote.shell === "powershell") return `& ${quotePowerShell(file)}`;
 		return file.includes(" ") ? `"${file}"` : file;
 	}
-	// `$0` is the daemon, `"$@"` its arguments; `$SHELL` is the login shell's own name for itself.
-	if (loginShell) return `exec "$SHELL" -lc 'exec "$0" "$@"' ${quotePosix(file)}`;
+	if (loginShell) {
+		// fish keeps all command arguments in $argv instead of POSIX $0 and $@.
+		const launch = `case "$SHELL" in */fish) exec "$SHELL" -lc 'exec $argv' "$@" ;; *) exec "$SHELL" -lc 'exec "$0" "$@"' "$@" ;; esac`;
+		return `sh -c ${quotePosix(launch)} sh ${quotePosix(file)}`;
+	}
 	return quotePosix(file);
 }
 

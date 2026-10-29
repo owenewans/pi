@@ -25,7 +25,8 @@ function assertDirectoryEntries(path: string, expectedEntries: readonly string[]
 }
 
 function assertWorkspace(): void {
-	assertDirectoryEntries("/repo", ["node_modules", "package.json", "packages", "vitest.base.ts"]);
+	assertDirectoryEntries("/repo", ["node_modules", "package.json", "packages", "scripts"]);
+	assertDirectoryEntries("/repo/scripts", ["vitest.base.ts"]);
 	assertDirectoryEntries("/repo/packages", ["evals"]);
 	assertDirectoryEntries("/repo/packages/evals", ["docker", "evals", "package.json", "src", "vitest.evals.config.ts"]);
 	const codingAgentDir = "/repo/node_modules/@earendil-works/pi-coding-agent";
@@ -46,15 +47,13 @@ function assertWorkspace(): void {
 		}
 	}
 	if (variant === "without_docs") {
-		for (const name of ["README.md", "CHANGELOG.md", "docs", "examples"]) {
+		for (const name of ["docs", "examples"]) {
 			if (existsSync(join(codingAgentDir, name))) throw new Error(`without_docs contains coding-agent ${name}.`);
 		}
 		return;
 	}
 	if (variant !== "with_docs") throw new Error("Eval image has no valid PI_EVAL_VARIANT.");
 	for (const path of [
-		join(codingAgentDir, "README.md"),
-		join(codingAgentDir, "CHANGELOG.md"),
 		join(codingAgentDir, "docs/models.md"),
 		join(codingAgentDir, "examples/README.md"),
 	]) {
@@ -94,7 +93,7 @@ for (const path of [
 	"/repo/packages/evals/src",
 	"/repo/packages/evals/docker",
 	"/repo/packages/evals/vitest.evals.config.ts",
-	"/repo/vitest.base.ts",
+	"/repo/scripts/vitest.base.ts",
 ]) {
 	assertRootOnly(path);
 	assertSandboxCannotRead(path);

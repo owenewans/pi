@@ -43,7 +43,7 @@ describe.sequential("Anthropic OAuth", () => {
 	it("keeps the localhost redirect_uri for manual callback login", async () => {
 		let authUrl = "";
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
-			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
+			expect(getUrl(input)).toBe("https://api.anthropic.com/v1/oauth/token");
 			expect(init?.method).toBe("POST");
 			const body = getJsonBody(init);
 			expect(body.grant_type).toBe("authorization_code");
@@ -85,7 +85,7 @@ describe.sequential("Anthropic OAuth", () => {
 		}> = [];
 		let authUrl = "";
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
-			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
+			expect(getUrl(input)).toBe("https://api.anthropic.com/v1/oauth/token");
 			const body = getJsonBody(init);
 			expect(body.grant_type).toBe("authorization_code");
 			expect(body.code).toBe("copied-code");
@@ -142,11 +142,66 @@ describe.sequential("Anthropic OAuth", () => {
 		).rejects.toThrow("Login cancelled");
 	});
 
-	it("omits scope from refresh token requests", async () => {
+	it.each([
+		{ access_token: "private-token", refresh_token: "private-refresh", expires_in: "3600" },
+		{ access_token: "", refresh_token: "private-refresh", expires_in: 3600 },
+		{ access_token: "private-token", refresh_token: "private-refresh", expires_in: -1 },
+		null,
+	])("rejects malformed token responses without exposing credentials: %j", async (body) => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(body)));
+		await expect(
+			anthropicOAuth.refresh(
+				{ type: "oauth", access: "old", refresh: "old-refresh", expires: 0 },
+				neverAbortedSignal,
+			),
+		).rejects.toThrow("Anthropic OAuth returned invalid token data");
+	});
+
+	it("keeps the refresh token when the server does not rotate it", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ access_token: "new", expires_in: 3600 })));
+		const credential = await anthropicOAuth.refresh(
+			{ type: "oauth", access: "old", refresh: "old-refresh", expires: 0 },
+			neverAbortedSignal,
+		);
+		expect(credential.refresh).toBe("old-refresh");
+	});
+
+	it("does not expose an error response body", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("private-token private-refresh", { status: 400 })));
+		await expect(
+			anthropicOAuth.refresh(
+				{ type: "oauth", access: "old", refresh: "old-refresh", expires: 0 },
+				neverAbortedSignal,
+			),
+		).rejects.toThrow(/^Anthropic OAuth HTTP 400$/);
+	});
+
+	it("does not expose malformed JSON or transport errors", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("private-token malformed JSON")));
+		await expect(
+			anthropicOAuth.refresh(
+				{ type: "oauth", access: "old", refresh: "old-refresh", expires: 0 },
+				neverAbortedSignal,
+			),
+		).rejects.toThrow(/^Anthropic OAuth returned invalid JSON$/);
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("private proxy credentials")));
+		await expect(
+			anthropicOAuth.refresh(
+				{ type: "oauth", access: "old", refresh: "old-refresh", expires: 0 },
+				neverAbortedSignal,
+			),
+		).rejects.toThrow(/^Anthropic OAuth request failed; check the connection and proxy$/);
+	});
+
+	it("omits scope from refresh token requests and sends Claude Code refresh headers", async () => {
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
-			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
+			expect(getUrl(input)).toBe("https://api.anthropic.com/v1/oauth/token");
 			expect(init?.method).toBe("POST");
 			const body = getJsonBody(init);
+			expect(new Headers(init?.headers).get("anthropic-beta")).toBe("oauth-2025-04-20");
+			expect(new Headers(init?.headers).get("user-agent")).toBe(
+				"anthropic-sdk-typescript/0.112.1 userOAuthProvider",
+			);
 			expect(body.grant_type).toBe("refresh_token");
 			expect(body.client_id).toBeTruthy();
 			expect(body.refresh_token).toBe("refresh-token");
@@ -256,7 +311,7 @@ async function loginThroughBrowserCallback() {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
-			if (getUrl(input) !== "https://platform.claude.com/v1/oauth/token") return nativeFetch(input as string, init);
+			if (getUrl(input) !== "https://api.anthropic.com/v1/oauth/token") return nativeFetch(input as string, init);
 			const body = getJsonBody(init);
 			exchangedCode = body.code;
 			exchangedRedirectUri = body.redirect_uri;

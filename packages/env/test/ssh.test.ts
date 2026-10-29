@@ -94,7 +94,7 @@ describe.skipIf(sshd === undefined)("SSH bootstrap", () => {
 				"PasswordAuthentication no",
 				"KbdInteractiveAuthentication no",
 				"StrictModes no",
-				`SetEnv HOME=${home}`,
+				`SetEnv HOME=${home} XDG_CONFIG_HOME=${join(home, ".config")}`,
 				"",
 			].join("\n"),
 		);
@@ -219,9 +219,11 @@ describe.skipIf(sshd === undefined)("SSH bootstrap", () => {
 	}, 60_000);
 
 	it("starts the daemon through the login shell only when asked", async () => {
-		// The login shell is the account's shell: sh and bash read .profile, zsh (the macOS default) reads .zprofile.
+		// the account shell reads its own startup file; fish reads config for non-login shells too.
 		writeFileSync(join(home, ".profile"), "export PI_ENV_LOGIN=yes\n");
 		writeFileSync(join(home, ".zprofile"), "export PI_ENV_LOGIN=yes\n");
+		mkdirSync(join(home, ".config/fish"), { recursive: true });
+		writeFileSync(join(home, ".config/fish/config.fish"), "if status is-login\nset -gx PI_ENV_LOGIN yes\nend\n");
 		const login = async (loginShell: boolean) => {
 			const { connection } = await connectSsh({ ...target, binary: daemon, loginShell });
 			try {

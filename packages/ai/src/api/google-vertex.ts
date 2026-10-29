@@ -6,10 +6,12 @@ import {
 	ResourceScope,
 	type ThinkingConfig,
 } from "@google/genai";
+import { vertexProxyAuthOptions } from "../internal/vertex-proxy-auth.ts";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
+	JsonObject,
 	Model,
 	ProviderEnv,
 	ProviderHeaders,
@@ -27,6 +29,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getConfiguredProviderProxy } from "../utils/proxy-routing.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { collapseSystemMessages, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
@@ -219,7 +222,8 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 								type: "toolCall",
 								id: toolCallId,
 								name: part.functionCall.name || "",
-								arguments: (part.functionCall.args as Record<string, any>) ?? {},
+								// Google function-call arguments are decoded from JSON by the SDK.
+								arguments: (part.functionCall.args ?? {}) as JsonObject,
 								...(part.thoughtSignature && { thoughtSignature: part.thoughtSignature }),
 							};
 
@@ -369,7 +373,9 @@ function createClient(
 	env?: ProviderEnv,
 	identity?: ClientIdentity,
 ): GoogleGenAI {
-	const googleAuthOptions = buildGoogleAuthOptions(env);
+	const googleAuthOptions = getConfiguredProviderProxy()
+		? vertexProxyAuthOptions(project, env)
+		: buildGoogleAuthOptions(env);
 	return new GoogleGenAI({
 		vertexai: true,
 		project,

@@ -9,7 +9,6 @@ export {
 	getDocsPath,
 	getExamplesPath,
 	getPackageDir,
-	getReadmePath,
 	VERSION,
 } from "./config.ts";
 export {

@@ -27,7 +27,7 @@ export const SETTINGS_DEFAULTS = {
 	hideThinkingBlock: false,
 	showCacheMissNotices: false,
 	quietStartup: false,
-	defaultProjectTrust: "ask",
+	defaultProjectTrust: "always",
 	collapseChangelog: false,
 	enableInstallTelemetry: true,
 	enableAnalytics: false,

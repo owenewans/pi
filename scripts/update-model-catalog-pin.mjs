@@ -17,10 +17,16 @@ function sha256(bytes) {
 }
 
 async function fetchRevision(revision) {
-	const response = await fetch(`https://pi.dev/api/models/revisions/${revision}?${MODEL_TYPES}`);
-	if (!response.ok) throw new Error(`Catalog revision ${revision} is unavailable: HTTP ${response.status}`);
+	const response = await fetch(
+		`https://pi.dev/api/models/revisions/${revision}?${MODEL_TYPES}`,
+	);
+	if (!response.ok)
+		throw new Error(
+			`Catalog revision ${revision} is unavailable: HTTP ${response.status}`,
+		);
 	const bytes = Buffer.from(await response.arrayBuffer());
-	if (sha256(bytes) !== revision) throw new Error(`Catalog revision ${revision} does not match its content`);
+	if (sha256(bytes) !== revision)
+		throw new Error(`Catalog revision ${revision} does not match its content`);
 	return bytes;
 }
 
@@ -32,7 +38,8 @@ async function fetchRevision(revision) {
  */
 async function fetchLiveCatalog() {
 	const response = await fetch(`https://pi.dev/api/models?${MODEL_TYPES}`);
-	if (!response.ok) throw new Error(`Catalog discovery failed: HTTP ${response.status}`);
+	if (!response.ok)
+		throw new Error(`Catalog discovery failed: HTTP ${response.status}`);
 	const revision = response.headers.get("x-pi-model-catalog-revision");
 	if (typeof revision !== "string" || !REVISION_RE.test(revision)) {
 		throw new Error("Catalog discovery returned an invalid or missing revision");
@@ -55,12 +62,13 @@ function modelApiGroups(root, bytes) {
 	const catalog = JSON.parse(bytes.toString("utf8"));
 	const groups = new Set();
 	for (const provider of readModelDataProviderIds(join(root, "packages/ai"))) {
-		for (const model of catalog[provider] ?? []) groups.add(`${provider}/${model.type}/${model.api}`);
+		for (const model of catalog[provider] ?? [])
+			groups.add(`${provider}/${model.type}/${model.api}`);
 	}
 	return groups;
 }
 
-/** Hydrate the checkout's model data from catalog bytes, as the Nix build does. */
+/** Hydrate the checkout's model data from catalog bytes, for offline builds. */
 export function hydrateModelCatalogBytes(root, bytes, options = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-model-catalog-pin-"));
 	try {
@@ -70,6 +78,17 @@ export function hydrateModelCatalogBytes(root, bytes, options = {}) {
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
+}
+
+/** Hydrate model data from the verified immutable pin without querying provider APIs. */
+export async function hydratePinnedModelCatalog(root) {
+	const pinPath = join(root, "scripts/model-catalog-pin.json");
+	const { revision } = JSON.parse(readFileSync(pinPath, "utf8"));
+	if (typeof revision !== "string" || !REVISION_RE.test(revision))
+		throw new Error("Invalid model catalog pin");
+	const bytes = await fetchRevision(revision);
+	hydrateModelCatalogBytes(root, bytes);
+	return revision;
 }
 
 /** Return why the catalog cannot hydrate this checkout, or undefined if it can. */
@@ -83,17 +102,18 @@ function hydrationProblem(root, bytes) {
 }
 
 /**
- * Pin the live model catalog for Nix builds. With `ifStale`, keep the current
+ * Pin the live model catalog for offline builds. With `ifStale`, keep the current
  * pin while it still hydrates this checkout and has the same model groups as
  * the live catalog for the checkout's providers. Returns the pinned revision
  * and its catalog bytes.
  */
 export async function updateModelCatalogPin(root, { ifStale = false } = {}) {
-	const pinPath = join(root, "nix/model-catalog.json");
+	const pinPath = join(root, "scripts/model-catalog-pin.json");
 	const current = JSON.parse(readFileSync(pinPath, "utf8")).revision;
 	let currentBytes;
 	if (ifStale) {
-		if (typeof current !== "string" || !REVISION_RE.test(current)) throw new Error(`Invalid pin in ${pinPath}`);
+		if (typeof current !== "string" || !REVISION_RE.test(current))
+			throw new Error(`Invalid pin in ${pinPath}`);
 		currentBytes = await fetchRevision(current);
 		const problem = hydrationProblem(root, currentBytes);
 		if (problem) {
@@ -113,25 +133,38 @@ export async function updateModelCatalogPin(root, { ifStale = false } = {}) {
 		const live = modelApiGroups(root, bytes);
 		const missing = [...live].filter((group) => !pinned.has(group)).sort();
 		const extra = [...pinned].filter((group) => !live.has(group)).sort();
-		if (missing.length === 0 && extra.length === 0) return { revision: current, updated: false, bytes: currentBytes };
+		if (missing.length === 0 && extra.length === 0)
+			return { revision: current, updated: false, bytes: currentBytes };
 		const differences = [
 			missing.length > 0 ? `missing ${missing.join(", ")}` : "",
 			extra.length > 0 ? `extra ${extra.join(", ")}` : "",
 		].filter(Boolean);
-		console.error(`Pinned model catalog is stale: model groups differ (${differences.join("; ")})`);
+		console.error(
+			`Pinned model catalog is stale: model groups differ (${differences.join("; ")})`,
+		);
 	}
 	const problem = hydrationProblem(root, bytes);
-	if (problem) throw new Error(`Live model catalog ${revision} cannot hydrate this checkout: ${problem}`);
+	if (problem)
+		throw new Error(
+			`Live model catalog ${revision} cannot hydrate this checkout: ${problem}`,
+		);
 	writeFileSync(pinPath, `${JSON.stringify({ revision }, null, 2)}\n`);
 	return { revision, updated: revision !== current, bytes };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (
+	process.argv[1] &&
+	import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
 	const args = process.argv.slice(2);
 	if (args.length > 1 || (args.length === 1 && args[0] !== "--if-stale")) {
-		throw new Error("Usage: node scripts/update-model-catalog-pin.mjs [--if-stale]");
+		throw new Error(
+			"Usage: node scripts/update-model-catalog-pin.mjs [--if-stale]",
+		);
 	}
 	const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const { revision, updated } = await updateModelCatalogPin(root, { ifStale: args[0] === "--if-stale" });
+	const { revision, updated } = await updateModelCatalogPin(root, {
+		ifStale: args[0] === "--if-stale",
+	});
 	console.log(`${updated ? "Pinned" : "Kept"} model catalog ${revision}`);
 }

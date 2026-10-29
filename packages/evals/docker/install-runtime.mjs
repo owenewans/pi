@@ -55,7 +55,8 @@ for (const packageName of artifactNames) {
 const runtimeRoot = join(outputDirectory, "root");
 const runtimeEvalRoot = join(runtimeRoot, "packages/evals");
 mkdirSync(join(runtimeEvalRoot, "docker"), { recursive: true });
-for (const file of ["package.json", "vitest.base.ts"]) {
+mkdirSync(join(runtimeRoot, "scripts"), { recursive: true });
+for (const file of ["package.json", "scripts/vitest.base.ts"]) {
 	cpSync(join(repositoryRoot, file), join(runtimeRoot, file));
 }
 for (const file of ["package.json", "vitest.evals.config.ts"]) {

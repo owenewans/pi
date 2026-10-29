@@ -13,8 +13,6 @@ RUN --mount=type=bind,source=.,target=/repo,rw \
 # coding-agent documentation whose effect the experiment measures.
 FROM builder AS without-docs-install
 RUN rm -rf \
-    /opt/evaluator/install/node_modules/@earendil-works/pi-coding-agent/README.md \
-    /opt/evaluator/install/node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md \
     /opt/evaluator/install/node_modules/@earendil-works/pi-coding-agent/docs \
     /opt/evaluator/install/node_modules/@earendil-works/pi-coding-agent/examples
 
@@ -29,7 +27,7 @@ RUN chmod -R go-rwx \
       /repo/packages/evals/evals \
       /repo/packages/evals/docker \
     && chmod go-rwx \
-      /repo/vitest.base.ts \
+      /repo/scripts/vitest.base.ts \
       /repo/packages/evals/vitest.evals.config.ts \
     && mkdir -p /run/pi-eval-secrets \
     && chmod 0700 /run/pi-eval-secrets

@@ -17,9 +17,7 @@
 	"files": [
 		"dist",
 		"bin",
-		"docs",
-		"README.md",
-		"CHANGELOG.md"
+		"docs"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",

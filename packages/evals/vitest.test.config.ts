@@ -1,5 +1,5 @@
 import { defineConfig, mergeConfig } from "vitest/config";
-import baseConfig, { workspaceSourcePaths } from "../../vitest.base.ts";
+import baseConfig, { workspaceSourcePaths } from "../../scripts/vitest.base.ts";
 
 export default mergeConfig(
 	baseConfig,

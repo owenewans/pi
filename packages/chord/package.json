@@ -57,8 +57,6 @@
 	"files": [
 		"dist",
 		"docs",
-		"README.md",
-		"CHANGELOG.md",
 		"src/delta/README.md"
 	],
 	"scripts": {

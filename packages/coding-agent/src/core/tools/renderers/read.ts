@@ -9,7 +9,7 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import { getReadmePath } from "../../../config.ts";
+import { getPackageDir } from "../../../config.ts";
 import { keyHint, keyText } from "../../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../../modes/interactive/theme/theme.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../../utils/paths.ts";
@@ -44,7 +44,7 @@ function toPosixPath(filePath: string): string {
 	return filePath.split(sep).join("/");
 }
 function getPiDocsClassification(absolutePath: string): CompactReadClassification | undefined {
-	const packageRoot = dirname(getReadmePath());
+	const packageRoot = getPackageDir();
 	const relativePath = relative(resolvePath(packageRoot), resolvePath(absolutePath));
 	if (
 		relativePath === "" ||
@@ -56,7 +56,7 @@ function getPiDocsClassification(absolutePath: string): CompactReadClassificatio
 	}
 
 	const label = toPosixPath(relativePath);
-	if (label === "README.md" || label.startsWith("docs/") || label.startsWith("examples/")) {
+	if (label.startsWith("docs/") || label.startsWith("examples/")) {
 		return { kind: "docs", label };
 	}
 	return undefined;

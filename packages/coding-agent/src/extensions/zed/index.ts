@@ -1,0 +1,127 @@
+import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
+import { buildPromptContext, formatWidgetLines, hasZedContext, readZedState, type ZedState } from "./state.ts";
+
+const widgetId = "pi-zed";
+const refreshMs = 1000;
+
+function stateResult(state: ZedState, available: string) {
+	const text = state.unavailableReason ? `zed unavailable: ${state.unavailableReason}` : available;
+	return { content: [{ type: "text" as const, text }], details: state };
+}
+
+export default function (pi: ExtensionAPI) {
+	let timer: ReturnType<typeof setInterval> | undefined;
+	let active = false;
+	let generation = 0;
+
+	async function refreshWidget(ctx: Pick<ExtensionContext, "cwd" | "ui">): Promise<void> {
+		if (!active) return;
+		const current = generation;
+		const state = await readZedState({ cwd: ctx.cwd });
+		if (!active || current !== generation) return;
+		const lines = formatWidgetLines(state);
+		if (lines.length === 0) {
+			ctx.ui.setWidget(widgetId, undefined);
+			return;
+		}
+
+		ctx.ui.setWidget(
+			widgetId,
+			(_tui, theme) => {
+				const body = lines
+					.map((line) => line.map((segment) => theme.fg(segment.role, segment.text)).join(""))
+					.join("\n");
+				return new Text(body, 0, 0);
+			},
+			{ placement: "aboveEditor" },
+		);
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		active = true;
+		const current = ++generation;
+		if (timer) clearInterval(timer);
+		await refreshWidget(ctx);
+		if (!active || current !== generation) return;
+		timer = setInterval(() => {
+			refreshWidget(ctx).catch(() => {
+				if (!active || current !== generation) return;
+				ctx.ui.setWidget(widgetId, (_tui, theme) => new Text(theme.fg("dim", "zed: unable to refresh"), 0, 0), {
+					placement: "aboveEditor",
+				});
+			});
+		}, refreshMs);
+	});
+
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (!active) return;
+		active = false;
+		generation++;
+		if (timer) clearInterval(timer);
+		timer = undefined;
+		ctx.ui.setWidget(widgetId, undefined);
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const state = await readZedState({ cwd: ctx.cwd });
+		await refreshWidget(ctx);
+		if (!hasZedContext(state)) return;
+		return {
+			message: {
+				customType: "zed-context",
+				content: buildPromptContext(state),
+				display: false,
+			},
+		};
+	});
+
+	pi.registerTool({
+		name: "zed_current_context",
+		label: "zed current context",
+		description: "return zed's active file, open files, and selected text for the current project.",
+		promptSnippet: "read current zed active file, open files, selected line ranges, and selected text",
+		promptGuidelines: ["use zed_current_context when the user asks about what is open or selected in zed."],
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const state = await readZedState({ cwd: ctx.cwd });
+			return stateResult(state, buildPromptContext(state));
+		},
+	});
+
+	pi.registerTool({
+		name: "zed_open_files",
+		label: "zed open files",
+		description: "return file paths currently open in the matching zed workspace.",
+		promptSnippet: "list files currently open in zed",
+		promptGuidelines: ["use zed_open_files when the user asks which files are currently open in zed."],
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const state = await readZedState({ cwd: ctx.cwd });
+			return stateResult(
+				state,
+				state.openFiles.length > 0 ? state.openFiles.join("\n") : "no open zed files found.",
+			);
+		},
+	});
+
+	pi.registerTool({
+		name: "zed_selected_lines",
+		label: "zed selected lines",
+		description: "return selected text from zed with file names and line numbers.",
+		promptSnippet: "read selected zed lines with file paths, line numbers, and text",
+		promptGuidelines: ["use zed_selected_lines when the user asks about selected text or selected lines in zed."],
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const state = await readZedState({ cwd: ctx.cwd });
+			return stateResult(
+				state,
+				state.selections.length > 0
+					? buildPromptContext({ ...state, openFiles: [] })
+					: "no selected zed lines found.",
+			);
+		},
+	});
+}

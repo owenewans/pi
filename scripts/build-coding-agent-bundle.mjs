@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +24,8 @@ const banner = {
 };
 const allowedExternalPackages = new Set([
 	"@silvia-odwyer/photon-node",
+	"@playwright/mcp",
+	"playwright-core",
 	"jiti",
 	// Optional native accelerators. Their callers fall back to JavaScript when absent.
 	"bufferutil",
@@ -25,6 +34,15 @@ const allowedExternalPackages = new Set([
 	"kerberos",
 	// Optional debug output coloring.
 	"supports-color",
+	// Linkedom falls back to its canvas shim; Chromium BiDi is unused by Camoufox.
+	"canvas",
+	"chromium-bidi/lib/cjs/bidiMapper/BidiMapper",
+	"chromium-bidi/lib/cjs/cdp/CdpConnection",
+	// Optional CSS implementation and Electron support are not used by these integrations.
+	"cssstyle",
+	"electron/index.js",
+	// Playwright resolves an executable dynamically at runtime.
+	"<runtime>",
 ]);
 
 const lazyJitiPlugin = {
@@ -81,7 +99,13 @@ function commonBuildOptions() {
 		banner,
 		bundle: true,
 		define: { PI_BUNDLED_NODE: "true" },
-		external: ["@silvia-odwyer/photon-node"],
+		external: [
+			"@silvia-odwyer/photon-node",
+			"@playwright/mcp",
+			"playwright-core",
+			"canvas",
+			"chromium-bidi/*",
+		],
 		format: "esm",
 		legalComments: "none",
 		logLevel: "warning",
@@ -108,7 +132,11 @@ function validateExternalImports(metafiles) {
 	for (const metafile of metafiles) {
 		for (const input of Object.values(metafile.inputs)) {
 			for (const imported of input.imports) {
-				if (!imported.external || isBuiltin(imported.path) || allowedExternalPackages.has(imported.path)) {
+				if (
+					!imported.external ||
+					isBuiltin(imported.path) ||
+					allowedExternalPackages.has(imported.path)
+				) {
 					continue;
 				}
 				unexpected.add(imported.path);
@@ -116,14 +144,20 @@ function validateExternalImports(metafiles) {
 		}
 	}
 	if (unexpected.size > 0) {
-		throw new Error(`Bundle left unexpected external imports: ${Array.from(unexpected).sort().join(", ")}`);
+		throw new Error(
+			`Bundle left unexpected external imports: ${Array.from(unexpected).sort().join(", ")}`,
+		);
 	}
 }
 
 function findContainingOutput(metafile, inputSuffix) {
 	const normalizedSuffix = inputSuffix.replaceAll("\\", "/");
 	for (const [outputPath, output] of Object.entries(metafile.outputs)) {
-		if (Object.keys(output.inputs).some((inputPath) => inputPath.replaceAll("\\", "/").endsWith(normalizedSuffix))) {
+		if (
+			Object.keys(output.inputs).some((inputPath) =>
+				inputPath.replaceAll("\\", "/").endsWith(normalizedSuffix),
+			)
+		) {
 			return resolve(repoRoot, outputPath);
 		}
 	}
@@ -132,7 +166,12 @@ function findContainingOutput(metafile, inputSuffix) {
 
 function outputBytes(metafiles) {
 	return metafiles.reduce(
-		(total, metafile) => total + Object.values(metafile.outputs).reduce((subtotal, output) => subtotal + output.bytes, 0),
+		(total, metafile) =>
+			total +
+			Object.values(metafile.outputs).reduce(
+				(subtotal, output) => subtotal + output.bytes,
+				0,
+			),
 		0,
 	);
 }
@@ -147,7 +186,9 @@ for (const entry of [
 	join(aiDistDir, "auth", "oauth", "anthropic.js"),
 ]) {
 	if (!existsSync(entry)) {
-		throw new Error(`Bundle input is missing: ${relative(repoRoot, entry)}. Build the workspace packages first.`);
+		throw new Error(
+			`Bundle input is missing: ${relative(repoRoot, entry)}. Build the workspace packages first.`,
+		);
 	}
 }
 
@@ -167,12 +208,26 @@ const mainResult = await build({
 	splitting: true,
 });
 
-const bedrockLoaderOutput = findContainingOutput(mainResult.metafile, "packages/ai/dist/api/bedrock-converse-stream.lazy.js");
-const oauthLoaderOutput = findContainingOutput(mainResult.metafile, "packages/ai/dist/auth/oauth/load.js");
-const imageResizeOutput = findContainingOutput(mainResult.metafile, "packages/coding-agent/dist/utils/image-resize.js");
-const configOutput = findContainingOutput(mainResult.metafile, "packages/coding-agent/dist/config.js");
+const bedrockLoaderOutput = findContainingOutput(
+	mainResult.metafile,
+	"packages/ai/dist/api/bedrock-converse-stream.lazy.js",
+);
+const oauthLoaderOutput = findContainingOutput(
+	mainResult.metafile,
+	"packages/ai/dist/auth/oauth/load.js",
+);
+const imageResizeOutput = findContainingOutput(
+	mainResult.metafile,
+	"packages/coding-agent/dist/utils/image-resize.js",
+);
+const configOutput = findContainingOutput(
+	mainResult.metafile,
+	"packages/coding-agent/dist/config.js",
+);
 if (dirname(bedrockLoaderOutput) !== dirname(oauthLoaderOutput)) {
-	throw new Error("Bedrock and OAuth lazy loaders were emitted into different directories");
+	throw new Error(
+		"Bedrock and OAuth lazy loaders were emitted into different directories",
+	);
 }
 
 // These implementations are reached through variable-specifier imports or a
@@ -180,9 +235,17 @@ if (dirname(bedrockLoaderOutput) !== dirname(oauthLoaderOutput)) {
 // file per implementation beside the code that resolves it.
 const lazyEntryPoints = {
 	anthropic: join(aiDistDir, "auth", "oauth", "anthropic.js"),
-	"bedrock-converse-stream": join(aiDistDir, "api", "bedrock-converse-stream.js"),
+	"bedrock-converse-stream": join(
+		aiDistDir,
+		"api",
+		"bedrock-converse-stream.js",
+	),
 	"github-copilot": join(aiDistDir, "auth", "oauth", "github-copilot.js"),
-	"image-resize-worker": join(codingAgentDistDir, "utils", "image-resize-worker.js"),
+	"image-resize-worker": join(
+		codingAgentDistDir,
+		"utils",
+		"image-resize-worker.js",
+	),
 	"kimi-coding": join(aiDistDir, "auth", "oauth", "kimi-coding.js"),
 	meta: join(aiDistDir, "auth", "oauth", "meta.js"),
 	"openai-chatgpt": join(aiDistDir, "auth", "oauth", "openai-chatgpt.js"),
@@ -194,10 +257,17 @@ const lazyEntryPoints = {
 
 // Every OAuth flow loaded through importOAuthModule() must have a lazy entry,
 // otherwise the flow fails at runtime with a missing module error.
-const oauthLoadSource = readFileSync(join(repoRoot, "packages", "ai", "src", "auth", "oauth", "load.ts"), "utf8");
-for (const match of oauthLoadSource.matchAll(/importOAuthModule\("\.\/([^"]+)\.ts"\)/g)) {
+const oauthLoadSource = readFileSync(
+	join(repoRoot, "packages", "ai", "src", "auth", "oauth", "load.ts"),
+	"utf8",
+);
+for (const match of oauthLoadSource.matchAll(
+	/importOAuthModule\("\.\/([^"]+)\.ts"\)/g,
+)) {
 	if (!(match[1] in lazyEntryPoints)) {
-		throw new Error(`OAuth flow "${match[1]}" is lazily imported but has no lazy bundle entry`);
+		throw new Error(
+			`OAuth flow "${match[1]}" is lazily imported but has no lazy bundle entry`,
+		);
 	}
 }
 
@@ -217,32 +287,57 @@ const codemodeWorkerResult = await build({
 	...commonBuildOptions(),
 	banner: undefined,
 	entryNames: "[name]",
-	entryPoints: { "codemode-worker": join(codingAgentDistDir, "extensions", "codemode", "worker.js") },
+	entryPoints: {
+		"codemode-worker": join(
+			codingAgentDistDir,
+			"extensions",
+			"codemode",
+			"worker.js",
+		),
+	},
 	outdir: dirname(bedrockLoaderOutput),
 	splitting: false,
 });
-for (const [outputPath, output] of Object.entries(codemodeWorkerResult.metafile.outputs)) {
-	const invalid = output.imports.filter((imported) => imported.kind !== "import-statement" || !isBuiltin(imported.path));
+for (const [outputPath, output] of Object.entries(
+	codemodeWorkerResult.metafile.outputs,
+)) {
+	const invalid = output.imports.filter(
+		(imported) =>
+			imported.kind !== "import-statement" || !isBuiltin(imported.path),
+	);
 	if (invalid.length > 0) {
 		throw new Error(
 			`Codemode worker must only import Node builtins: ${invalid.map((imported) => imported.path).join(", ")}`,
 		);
 	}
-	if (readFileSync(resolve(repoRoot, outputPath), "utf8").includes("import.meta")) {
+	if (
+		readFileSync(resolve(repoRoot, outputPath), "utf8").includes("import.meta")
+	) {
 		throw new Error("Codemode worker must not use import.meta");
 	}
 }
 
-const imageResizeWorkerOutput = resolve(dirname(bedrockLoaderOutput), "image-resize-worker.js");
+const imageResizeWorkerOutput = resolve(
+	dirname(bedrockLoaderOutput),
+	"image-resize-worker.js",
+);
 if (dirname(imageResizeOutput) !== dirname(imageResizeWorkerOutput)) {
-	throw new Error("Image resize implementation and worker were emitted into different directories");
+	throw new Error(
+		"Image resize implementation and worker were emitted into different directories",
+	);
 }
 // getCodemodeWorkerUrl() in config.ts resolves the worker next to its own chunk.
 if (dirname(configOutput) !== dirname(bedrockLoaderOutput)) {
-	throw new Error("config.ts and the codemode worker were emitted into different directories");
+	throw new Error(
+		"config.ts and the codemode worker were emitted into different directories",
+	);
 }
 
-const metafiles = [mainResult.metafile, lazyResult.metafile, codemodeWorkerResult.metafile];
+const metafiles = [
+	mainResult.metafile,
+	lazyResult.metafile,
+	codemodeWorkerResult.metafile,
+];
 validateExternalImports(metafiles);
 const cliLauncher = `#!/usr/bin/env node
 import { createRequire, enableCompileCache } from "node:module";
@@ -254,6 +349,10 @@ writeFileSync(join(bundleDir, "cli.js"), cliLauncher);
 chmodSync(join(bundleDir, "cli.js"), 0o755);
 chmodSync(join(bundleDir, "rpc-entry.js"), 0o755);
 
-const files = new Set(metafiles.flatMap((metafile) => Object.keys(metafile.outputs))).size + 1;
+const files =
+	new Set(metafiles.flatMap((metafile) => Object.keys(metafile.outputs))).size +
+	1;
 const mib = (outputBytes(metafiles) + cliLauncher.length) / (1024 * 1024);
-console.log(`Built ${relative(repoRoot, bundleDir)} (${files} files, ${mib.toFixed(1)} MiB)`);
+console.log(
+	`Built ${relative(repoRoot, bundleDir)} (${files} files, ${mib.toFixed(1)} MiB)`,
+);

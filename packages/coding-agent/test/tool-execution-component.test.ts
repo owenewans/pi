@@ -3,7 +3,7 @@ import { resetCapabilitiesCache, setCapabilities, Text, type TUI, type TuiMouseE
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
-import { getReadmePath } from "../src/config.ts";
+import { getDocsPath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { type BashOperations, createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
@@ -666,9 +666,9 @@ describe("ToolExecutionComponent parity", () => {
 		},
 		{
 			title: "Pi documentation",
-			path: getReadmePath(),
+			path: join(getDocsPath(), "tui.md"),
 			content: "Hidden docs content",
-			compact: "read docs README.md",
+			compact: "read docs docs/tui.md",
 			hidden: "Hidden docs content",
 			absent: undefined,
 		},
@@ -703,7 +703,7 @@ describe("ToolExecutionComponent parity", () => {
 
 	for (const scenario of [
 		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
-		{ title: "Pi documentation", path: getReadmePath(), compact: "read docs README.md:120-329" },
+		{ title: "Pi documentation", path: join(getDocsPath(), "tui.md"), compact: "read docs docs/tui.md:120-329" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
 			const component = new ToolExecutionComponent(

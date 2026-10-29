@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
+import { applyHttpProxySettings, getServiceDispatcher } from "../src/core/http-dispatcher.ts";
 import {
 	type PersonalizeCatalog,
 	REMOTE_CATALOG_MODEL_TYPES,
@@ -75,9 +76,18 @@ async function refreshProvider(
 	});
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	applyHttpProxySettings(undefined);
+	vi.restoreAllMocks();
+});
 
 describe("remote catalog provider", () => {
+	it("uses the model-specific dispatcher rather than the provider route", async () => {
+		applyHttpProxySettings("http://127.0.0.1:1", { models: false });
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not found", { status: 404 }));
+		await refreshProvider(testProvider(), new InMemoryModelsStore());
+		expect(fetchSpy.mock.calls[0]?.[1]).toHaveProperty("dispatcher", getServiceDispatcher("models"));
+	});
 	it("parses keyed catalogs, sends version headers, observes the refresh TTL, and supports forced refreshes", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
 			async () =>

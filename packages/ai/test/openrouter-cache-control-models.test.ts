@@ -9,10 +9,8 @@ const OPENROUTER_ANTHROPIC_LATEST_MODEL_IDS = [
 ] as const;
 
 describe("OpenRouter Anthropic latest alias metadata", () => {
-	it.each(OPENROUTER_ANTHROPIC_LATEST_MODEL_IDS)("keeps completions cache control for %s", (modelId) => {
+	it.each(OPENROUTER_ANTHROPIC_LATEST_MODEL_IDS)("uses native Anthropic messages for %s", (modelId) => {
 		const model = getModel("openrouter", modelId);
-		expect(model.api).toBe("openai-completions");
-		if (model.api !== "openai-completions") throw new Error(`Unexpected API for ${modelId}`);
-		expect(model.compat?.cacheControlFormat).toBe("anthropic");
+		expect(model.api).toBe("anthropic-messages");
 	});
 });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveHttpProxyUrlForTarget, UNSUPPORTED_PROXY_PROTOCOL_MESSAGE } from "../src/utils/node-http-proxy.ts";
+import { parseProxyUrl, setProviderProxy } from "../src/utils/proxy-routing.ts";
 
 const PROXY_ENV_KEYS = [
 	"HTTP_PROXY",
@@ -28,6 +29,7 @@ function resetProxyEnv(): void {
 }
 
 afterEach(() => {
+	setProviderProxy(undefined);
 	resetProxyEnv();
 	for (const [key, value] of originalEnv) {
 		if (value !== undefined) {
@@ -65,13 +67,65 @@ describe("node HTTP proxy resolution", () => {
 		).toBe("http://scoped-proxy.example:8080/");
 	});
 
-	it("rejects SOCKS and PAC proxy URLs explicitly", () => {
+	it("rejects PAC proxy URLs explicitly", () => {
 		resetProxyEnv();
-		process.env.HTTPS_PROXY = "socks5://proxy.example:1080";
+		process.env.HTTPS_PROXY = "pac+https://proxy.example/proxy.pac";
 
 		expect(() => resolveHttpProxyUrlForTarget("https://bedrock-runtime.us-east-1.amazonaws.com")).toThrow(
 			UNSUPPORTED_PROXY_PROTOCOL_MESSAGE,
 		);
+	});
+
+	it("supports HTTP, HTTPS, SOCKS5 and SOCKS5h without exporting proxy settings", () => {
+		resetProxyEnv();
+		process.env.NO_PROXY = "*";
+		for (const protocol of ["http", "https", "socks5", "socks5h"]) {
+			setProviderProxy(`${protocol}://fixture-user:fixture-secret@proxy.example:1080`);
+			expect(resolveHttpProxyUrlForTarget("https://example.org")?.protocol).toBe(`${protocol}:`);
+			expect(process.env.HTTPS_PROXY).toBeUndefined();
+			expect(process.env.HTTP_PROXY).toBeUndefined();
+		}
+	});
+
+	it("explicit direct routing overrides ambient proxies", () => {
+		resetProxyEnv();
+		process.env.HTTPS_PROXY = "http://ambient.example:8080";
+		setProviderProxy(false);
+		expect(resolveHttpProxyUrlForTarget("https://example.org")).toBeUndefined();
+	});
+
+	it("rejects malformed settings before changing the active route", () => {
+		setProviderProxy("http://proxy.example:8080");
+		for (const invalid of [
+			"http://user:%zz@proxy.example",
+			"http://proxy.example/path",
+			"http://proxy.example?secret",
+			"http://proxy.example#secret",
+		]) {
+			expect(() => setProviderProxy(invalid)).toThrow();
+			expect(resolveHttpProxyUrlForTarget("https://example.org")?.hostname).toBe("proxy.example");
+		}
+		expect(parseProxyUrl("socks5h://proxy.example").protocol).toBe("socks5h:");
+	});
+
+	it("never includes credentials in invalid proxy errors", () => {
+		resetProxyEnv();
+		for (const proxy of [
+			"http://fixture-user:fixture-secret@[invalid",
+			"private-secret://fixture-user:fixture-secret@proxy.example",
+		]) {
+			process.env.HTTPS_PROXY = proxy;
+			let message = "";
+			try {
+				resolveHttpProxyUrlForTarget("https://example.org");
+			} catch (error) {
+				message = error instanceof Error ? error.message : String(error);
+			}
+			expect(message).not.toBe("");
+			expect(message).not.toContain("fixture-user");
+			expect(message).not.toContain("fixture-secret");
+			expect(message).not.toContain("private-secret");
+		}
 	});
 
 	it("handles subdomain wildcards, IPv6, and ports in NO_PROXY", () => {

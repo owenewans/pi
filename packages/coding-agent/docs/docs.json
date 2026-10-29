@@ -99,6 +99,26 @@
             {
               "title": "Connect MCP Servers",
               "path": "mcp.md"
+            },
+            {
+              "title": "Telegram Reader",
+              "path": "telegram.md"
+            },
+            {
+              "title": "Zed Context",
+              "path": "zed.md"
+            },
+            {
+              "title": "ACP for Zed",
+              "path": "acp.md"
+            },
+            {
+              "title": "Subagents",
+              "path": "subagents.md"
+            },
+            {
+              "title": "Debugger",
+              "path": "debugger.md"
             }
           ]
         },
