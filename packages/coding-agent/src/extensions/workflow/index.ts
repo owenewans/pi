@@ -1,4 +1,4 @@
-// provides interactive questions and a task list stored on the current session branch.
+// provides questions, tasks and continuous goals on the current session branch.
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
@@ -10,7 +10,19 @@ const tasksSchema = Type.Array(
 	}),
 );
 
+const goalSchema = Type.Object({ task: Type.String({ minLength: 1 }), active: Type.Boolean() });
+
 export default function workflowExtension(pi: ExtensionAPI): void {
+	let goal = { task: "", active: false };
+	const saveGoal = (ctx: ExtensionContext) => {
+		pi.appendEntry("goal", { ...goal });
+		ctx.ui.setStatus("goal", goal.active ? "goal" : undefined);
+	};
+	const pauseGoal = (ctx: ExtensionContext) => {
+		if (!goal.active) return;
+		goal.active = false;
+		saveGoal(ctx);
+	};
 	let tasks: { text: string; state: "pending" | "active" | "done" }[] = [];
 	const draw = (ctx: ExtensionContext) => {
 		ctx.ui.setWidget(
@@ -27,15 +39,85 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 	};
 	const restore = (_event: unknown, ctx: ExtensionContext) => {
 		tasks = [];
+		goal = { task: "", active: false };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			// persisted session data crosses a disk-input boundary.
 			if (entry.type === "custom" && entry.customType === "tasks" && Check(tasksSchema, entry.data))
 				tasks = entry.data;
+			if (entry.type === "custom" && entry.customType === "goal" && Check(goalSchema, entry.data))
+				goal = { ...entry.data };
 		}
+		// reopening a session or branch retains the task without starting requests.
+		pauseGoal(ctx);
+		ctx.ui.setStatus("goal", undefined);
 		draw(ctx);
 	};
 	pi.on("session_start", restore);
 	pi.on("session_tree", restore);
+	pi.on("before_agent_start", () => {
+		if (!goal.active) return;
+		return {
+			message: {
+				customType: "goal-context",
+				content: `Active goal: ${goal.task}\nKeep working on this authorized goal until the user sends /stop. Verify results and pursue remaining work within its scope. Do not invent unrelated tasks or repeat completed actions. Ask when missing input prevents correct work.`,
+				display: false,
+			},
+		};
+	});
+	pi.on("agent_before_settle", (event, ctx) => {
+		if (!goal.active) return;
+		if (event.outcome !== "completed") {
+			pauseGoal(ctx);
+			return;
+		}
+		if (event.continue || ctx.hasPendingMessages()) return;
+		return {
+			continue: true,
+			entries: [
+				...event.entries,
+				{
+					type: "custom_message",
+					customType: "goal-continue",
+					content: `Continue the authorized goal: ${goal.task}\nCheck progress and do the next useful work within scope. The goal remains active until /stop; do not expand its scope or repeat completed actions.`,
+					display: false,
+				},
+			],
+		};
+	});
+	pi.on("agent_settled", (_event, ctx) => pauseGoal(ctx));
+	pi.registerCommand("goal", {
+		description: "Work continuously: /goal <task>, /goal resume; /stop to stop",
+		handler: async (args, ctx) => {
+			const task = args.trim();
+			if (!task) {
+				ctx.ui.notify(
+					goal.task ? `${goal.active ? "active" : "paused"}: ${goal.task}` : "use /goal <task>",
+					"info",
+				);
+				return;
+			}
+			if (!ctx.isIdle()) {
+				ctx.ui.notify("wait for current work to finish, or /stop before starting a goal", "error");
+				return;
+			}
+			if (task === "resume") {
+				if (!goal.task) {
+					ctx.ui.notify("no goal to resume", "error");
+					return;
+				}
+			} else goal.task = task;
+			goal.active = true;
+			saveGoal(ctx);
+			pi.sendUserMessage(goal.task, { deliverAs: "followUp" });
+		},
+	});
+	pi.registerCommand("stop", {
+		description: "Stop the goal and abort current work",
+		handler: async (_args, ctx) => {
+			pauseGoal(ctx);
+			ctx.abort();
+		},
+	});
 	pi.registerTool({
 		name: "todo",
 		label: "Tasks",
@@ -78,7 +160,8 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 					if (answer === custom) answer = await ctx.ui.input(question.question);
 				} else answer = await ctx.ui.input(question.question);
 				signal?.throwIfAborted();
-				if (answer === undefined)
+				if (answer === undefined) {
+					pauseGoal(ctx);
 					return {
 						content: [
 							{
@@ -88,6 +171,7 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 						],
 						details: { status: "cancelled", answers },
 					};
+				}
 				answers.push({ question: question.question, answer });
 			}
 			return {

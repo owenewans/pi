@@ -41,6 +41,14 @@ A message sent with `Enter` waits until the current response and its tool calls 
 
 Windows Terminal reserves some Alt shortcuts. See [Terminal Setup](terminal-setup.md) for the Windows alternatives.
 
+## Run a continuous goal
+
+Use `/goal <task>` while idle to keep the agent working on that task until `/stop`. A normal completed response does not end the goal. Continuation prompts stay hidden; the footer shows `goal` while active.
+
+`/stop` disables continuation and aborts current work. Escape, a terminal provider error, or a cancelled question also pauses the goal. Use `/goal` to inspect it and `/goal resume` to continue. Goals follow the session branch and survive compaction; reopening a session or switching branches restores them paused.
+
+The loop has no turn or token budget. It keeps making model requests until stopped or paused.
+
 ## Change the model or settings
 
 Type `/` to search the available commands. The commands you will use most often are:
@@ -51,6 +59,10 @@ Type `/` to search the available commands. The commands you will use most often 
 - `/settings` changes common preferences.
 
 Prompt templates, skills, and extensions can add more commands to the same menu. See [Choose a Model](models.md), [Configuration](configuration.md), or the complete [Slash Commands reference](slash-commands.md).
+
+## Account quota
+
+`/usage` shows the current Claude or ChatGPT account quota, with weekly and monthly rows when the provider reports them. Use `/usage claude` or `/usage chatgpt` to select an account. Each available row has an ASCII bar and reset time. Missing windows are marked unavailable. Claude's monthly extra-usage spending cap is labeled separately from its subscription quota.
 
 ## Continue or start over
 

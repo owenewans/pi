@@ -9,6 +9,8 @@ import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 async function setup(session = SessionManager.inMemory()) {
 	const runtime = createExtensionRuntime();
+	const sendUserMessage = vi.fn();
+	runtime.sendUserMessage = sendUserMessage;
 	runtime.appendEntry = (type, data) => {
 		session.appendCustomEntry(type, data);
 	};
@@ -24,8 +26,13 @@ async function setup(session = SessionManager.inMemory()) {
 	const input = vi.fn<(...args: unknown[]) => Promise<string | undefined>>();
 	const select = vi.fn<(...args: unknown[]) => Promise<string | undefined>>();
 	const setWidget = vi.fn();
-	runner.setUIContext({ ...runner.createToolContext("fixture", undefined).ui, input, select, setWidget }, "tui");
-	return { session, runner, extension, input, select, setWidget };
+	const setStatus = vi.fn();
+	const notify = vi.fn();
+	runner.setUIContext(
+		{ ...runner.createToolContext("fixture", undefined).ui, input, select, setWidget, setStatus, notify },
+		"tui",
+	);
+	return { session, runner, extension, input, select, setWidget, setStatus, notify, sendUserMessage };
 }
 
 describe("workflow tools", () => {
@@ -163,5 +170,110 @@ describe("workflow tools", () => {
 					fixture.runner.createToolContext("fixture", undefined),
 				),
 		).rejects.toThrow("interactive UI");
+	});
+});
+
+async function boundary(fixture: Awaited<ReturnType<typeof setup>>) {
+	return fixture.runner.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, () => ({
+		contextEntries: [],
+		contextMessages: [],
+		llmMessages: [],
+		pendingMessages: [],
+		canContinue: false,
+	}));
+}
+
+async function command(fixture: Awaited<ReturnType<typeof setup>>, name: string, args = "") {
+	return fixture.extension.commands.get(name)!.handler(args, fixture.runner.createCommandContext());
+}
+
+describe("workflow goals", () => {
+	it("shows status without starting requests and handles resume without a task", async () => {
+		const fixture = await setup();
+		await command(fixture, "goal");
+		await command(fixture, "goal", "resume");
+		expect(fixture.notify).toHaveBeenLastCalledWith("no goal to resume", "error");
+		expect(fixture.sendUserMessage).not.toHaveBeenCalled();
+	});
+
+	it("queues a trimmed task and injects hidden continuation without requiring user-ending context", async () => {
+		const fixture = await setup();
+		await command(fixture, "goal", "  test changes  ");
+		expect(fixture.sendUserMessage).toHaveBeenCalledWith("test changes", { deliverAs: "followUp" });
+		expect(fixture.setStatus).toHaveBeenLastCalledWith("goal", "goal");
+		const result = await boundary(fixture);
+		expect(result.continue).toBe(true);
+		expect(result.entries).toEqual([
+			expect.objectContaining({
+				type: "custom_message",
+				customType: "goal-continue",
+				display: false,
+				content: expect.stringContaining("test changes"),
+			}),
+		]);
+	});
+
+	it("preserves other boundary drafts and yields to an existing continuation", async () => {
+		const fixture = await setup();
+		await command(fixture, "goal", "test changes");
+		const handler = fixture.extension.handlers.get("agent_before_settle")![0];
+		const entry = { type: "custom" as const, customType: "other", data: 1 };
+		const context = {
+			contextEntries: [],
+			contextMessages: [],
+			llmMessages: [],
+			pendingMessages: [],
+			canContinue: false,
+		};
+		const event = {
+			type: "agent_before_settle" as const,
+			outcome: "completed" as const,
+			entries: [entry],
+			continue: false,
+			context,
+		};
+		const ctx = fixture.runner.createContext();
+		expect(await handler(event, ctx)).toMatchObject({ entries: [entry, expect.anything()], continue: true });
+		expect(await handler({ ...event, continue: true }, ctx)).toBeUndefined();
+		ctx.hasPendingMessages = () => true;
+		expect(await handler(event, ctx)).toBeUndefined();
+	});
+
+	it("restores tasks paused on session startup and resumes only on command", async () => {
+		const first = await setup();
+		await command(first, "goal", "test changes");
+		const second = await setup(first.session);
+		await second.runner.emit({ type: "session_start", reason: "startup" });
+		expect((await boundary(second)).continue).toBe(false);
+		expect(second.sendUserMessage).not.toHaveBeenCalled();
+		await command(second, "goal", "resume");
+		expect(second.sendUserMessage).toHaveBeenCalledWith("test changes", { deliverAs: "followUp" });
+		expect((await boundary(second)).continue).toBe(true);
+	});
+
+	it("ignores malformed goal entries", async () => {
+		const fixture = await setup();
+		fixture.session.appendCustomEntry("goal", { task: 42, active: true });
+		await fixture.runner.emit({ type: "session_start", reason: "startup" });
+		expect((await boundary(fixture)).continue).toBe(false);
+		await command(fixture, "goal", "resume");
+		expect(fixture.sendUserMessage).not.toHaveBeenCalled();
+	});
+
+	it("pauses when a question is cancelled", async () => {
+		const fixture = await setup();
+		fixture.input.mockResolvedValueOnce(undefined);
+		await command(fixture, "goal", "test changes");
+		await fixture.extension.tools
+			.get("ask")!
+			.definition.execute(
+				"ask",
+				{ questions: [{ question: "Which host?" }] },
+				undefined,
+				undefined,
+				fixture.runner.createToolContext("fixture", undefined),
+			);
+		expect((await boundary(fixture)).continue).toBe(false);
+		expect(fixture.setStatus).toHaveBeenLastCalledWith("goal", undefined);
 	});
 });

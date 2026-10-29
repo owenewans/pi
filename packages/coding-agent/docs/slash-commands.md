@@ -30,6 +30,17 @@ Extensions, prompt templates, and skills can add commands. The command menu in P
 | `/compact [instructions]` | Compact the current context, optionally with custom instructions |
 | `/import <path>` | Import and resume a JSONL session |
 
+## Goals
+
+| Command | Description |
+|---|---|
+| `/goal <task>` | Start continuous work on a task while idle |
+| `/goal` | Show the current goal and its status |
+| `/goal resume` | Resume a paused goal |
+| `/stop` | Pause the goal and abort current work |
+
+See [continuous goals](usage.md#run-a-continuous-goal) for interruption and session behavior.
+
 ## Export and share
 
 | Command | Description |

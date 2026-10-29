@@ -4,9 +4,15 @@ import { fetchService } from "../../core/http-dispatcher.ts";
 
 export type UsageProvider = "anthropic" | "openai-codex";
 
-export type AccountUsage = {
+export type UsageQuota = {
 	remaining: number;
 	resetsAt?: number;
+};
+
+export type AccountUsage = UsageQuota & {
+	weekly?: UsageQuota;
+	monthly?: UsageQuota;
+	monthlyKind?: "extra";
 };
 
 export default function usageExtension(pi: ExtensionAPI): void {
@@ -41,7 +47,7 @@ export default function usageExtension(pi: ExtensionAPI): void {
 	});
 }
 
-/** Fetches the primary account quota without sending inference requests. */
+/** Fetches account quotas without sending inference requests. */
 export async function fetchAccountUsage(provider: UsageProvider, token: string): Promise<AccountUsage> {
 	const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
 	if (provider === "anthropic") headers["anthropic-beta"] = "oauth-2025-04-20";
@@ -62,7 +68,10 @@ export async function fetchAccountUsage(provider: UsageProvider, token: string):
 			: "https://chatgpt.com/backend-api/wham/usage";
 	let response: Awaited<ReturnType<typeof fetchService>>;
 	try {
-		response = await fetchService("usage", url, { headers, signal: AbortSignal.timeout(15_000) });
+		response = await fetchService("usage", url, {
+			headers,
+			signal: AbortSignal.timeout(15_000),
+		});
 	} catch {
 		throw new Error("Account quota request failed; check the connection and proxy");
 	}
@@ -74,18 +83,56 @@ export async function fetchAccountUsage(provider: UsageProvider, token: string):
 		throw new Error("Invalid account quota response");
 	}
 	const payload = record(body);
-	const window =
-		provider === "anthropic" ? record(payload?.five_hour) : record(record(payload?.rate_limit)?.primary_window);
+	const limits = record(payload?.rate_limit);
+	const primary = provider === "anthropic" ? record(payload?.five_hour) : record(limits?.primary_window);
+	const usage: AccountUsage | undefined = parseQuota(primary, provider);
+	if (!usage) throw new Error("Account quota response has no primary limit");
+	if (provider === "anthropic") {
+		const weekly = parseQuota(record(payload?.seven_day), provider);
+		if (weekly) usage.weekly = weekly;
+		// extra usage is a separate monthly spending cap, not the subscription quota.
+		const extra = record(payload?.extra_usage);
+		const limit = extra?.monthly_limit;
+		const used = extra?.used_credits;
+		if (extra?.is_enabled === true && finite(limit) && limit > 0 && finite(used) && used >= 0) {
+			usage.monthly = {
+				remaining: Math.max(0, Math.min(100, 100 - (used / limit) * 100)),
+			};
+			usage.monthlyKind = "extra";
+		}
+	} else {
+		for (const value of [limits?.primary_window, limits?.secondary_window]) {
+			const window = record(value);
+			const quota = parseQuota(window, provider);
+			if (!quota) continue;
+			const seconds = window?.limit_window_seconds;
+			if (seconds === 604800) usage.weekly ??= quota;
+			// month-length windows vary; do not classify arbitrary long limits as monthly.
+			else if (finite(seconds) && seconds >= 28 * 86400 && seconds <= 31 * 86400) usage.monthly ??= quota;
+		}
+	}
+	return usage;
+}
+
+function finite(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseQuota(window: Record<string, unknown> | undefined, provider: UsageProvider): UsageQuota | undefined {
 	const used = provider === "anthropic" ? window?.utilization : window?.used_percent;
-	if (typeof used !== "number" || !Number.isFinite(used))
-		throw new Error("Account quota response has no primary limit");
+	if (!finite(used)) return undefined;
 	const reset = provider === "anthropic" ? window?.resets_at : window?.reset_at;
 	let resetsAt: number | undefined;
 	if (typeof reset === "string") resetsAt = Date.parse(reset);
-	else if (typeof reset === "number") resetsAt = reset * 1000;
-	const usage: AccountUsage = { remaining: Math.max(0, Math.min(100, 100 - used)) };
-	if (resetsAt !== undefined && Number.isFinite(resetsAt)) usage.resetsAt = resetsAt;
-	return usage;
+	else if (finite(reset)) resetsAt = reset * 1000;
+	if (resetsAt === undefined && provider === "openai-codex" && finite(window?.reset_after_seconds)) {
+		resetsAt = Date.now() + Math.max(0, window.reset_after_seconds) * 1000;
+	}
+	const quota: UsageQuota = {
+		remaining: Math.max(0, Math.min(100, 100 - used)),
+	};
+	if (resetsAt !== undefined && Number.isFinite(resetsAt) && Math.abs(resetsAt) <= 8.64e15) quota.resetsAt = resetsAt;
+	return quota;
 }
 
 // quota payloads and decoded JWT claims cross a network-input boundary.
@@ -95,12 +142,21 @@ function record(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
-/** Renders the primary quota using owencfg's compact ASCII bar. */
+/** Renders account quotas using owencfg's compact ASCII bar. */
 export function formatAccountUsage(usage: AccountUsage): string {
-	const blocks = Math.round(usage.remaining / 5);
-	const bar = `Usage [${":".repeat(blocks)}${" ".repeat(20 - blocks)}] left ${usage.remaining.toFixed(0)}%`;
-	if (usage.resetsAt === undefined) return `${bar}\nResets: unknown`;
-	const minutes = Math.max(0, Math.floor((usage.resetsAt - Date.now()) / 60_000));
-	const reset = new Date(usage.resetsAt).toISOString().replace("T", " ").slice(0, 16);
+	return [
+		formatQuota("Usage", usage),
+		formatQuota("Weekly", usage.weekly),
+		formatQuota(usage.monthlyKind === "extra" ? "Monthly extra" : "Monthly", usage.monthly),
+	].join("\n");
+}
+
+function formatQuota(label: string, quota: UsageQuota | undefined): string {
+	if (!quota) return `${label}: unavailable (not reported by API)`;
+	const blocks = Math.round(quota.remaining / 5);
+	const bar = `${label} [${":".repeat(blocks)}${" ".repeat(20 - blocks)}] left ${quota.remaining.toFixed(0)}%`;
+	if (quota.resetsAt === undefined) return `${bar}\nResets: unknown`;
+	const minutes = Math.max(0, Math.floor((quota.resetsAt - Date.now()) / 60_000));
+	const reset = new Date(quota.resetsAt).toISOString().replace("T", " ").slice(0, 16);
 	return `${bar}\nResets: ${reset} UTC in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
