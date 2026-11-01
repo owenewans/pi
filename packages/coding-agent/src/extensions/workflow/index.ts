@@ -141,7 +141,7 @@ export default function workflowExtension(pi: ExtensionAPI): void {
 		name: "ask",
 		label: "Ask",
 		description:
-			"Ask the user questions with optional choices and free-text answers. Ask only when a missing fact prevents correct work.",
+			"Ask the user clarification questions, including short questions, instead of asking in chat. Provide selectable choices when applicable. Ask only when a missing fact prevents correct work.",
 		parameters: Type.Object({
 			questions: Type.Array(
 				Type.Object({ question: Type.String({ minLength: 1 }), choices: Type.Optional(Type.Array(Type.String())) }),

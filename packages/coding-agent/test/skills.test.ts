@@ -1,6 +1,7 @@
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
+import { getBundledSkillsPath } from "../src/config.ts";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
 import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
@@ -27,6 +28,16 @@ function createTestSkill(options: {
 }
 
 describe("skills", () => {
+	it("discovers the bundled readme skill without diagnostics", () => {
+		const { skills, diagnostics } = loadSkillsFromDir({ dir: getBundledSkillsPath(), source: "builtin" });
+		const skill = skills.find((item) => item.name === "readme");
+		expect(skill).toMatchObject({ disableModelInvocation: false });
+		expect(skill?.description).toContain("README");
+		expect(skill?.filePath).toBe(join(getBundledSkillsPath(), "readme.md"));
+		expect(diagnostics).toEqual([]);
+		expect(formatSkillsForPrompt(skills)).toContain("<name>readme</name>");
+	});
+
 	describe("loadSkillsFromDir", () => {
 		it("should load a valid skill", () => {
 			const { skills, diagnostics } = loadSkillsFromDir({

@@ -8,7 +8,7 @@ Ask together for missing decisions: license, GitHub or Codeberg, repository name
 
 Never choose a license without asking unless the user explicitly delegates that decision. Suggest Unlicense by default. Explain GPL when the user wants derivatives to stay open; do not prefer MIT or BSD automatically. Keep inherited licenses and notices intact. Name the license file `license` unless the project requires another path.
 
-Write `.gitignore` for the actual language and build outputs, without comments or unrelated templates. Create only the requested files. A README states purpose, working commands and actual limitations; omit badges, filler and unimplemented features unless requested.
+Write `.gitignore` for the actual language and build outputs, without comments or unrelated templates. Create only the requested files. For a README, load `readme.md` from this skill's directory and follow its project-specific layout. State purpose, working commands and actual limitations; omit filler and unimplemented features.
 
 Test the starting project. When an initial commit is authorized, include the license, README, ignore rules and relevant starting code; use `first commit`.
 
