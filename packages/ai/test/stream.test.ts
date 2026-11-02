@@ -9,6 +9,7 @@ import type { Api, Context, ImageContent, Model, StreamOptions, Tool, ToolResult
 
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
 
+import { antigravityProvider } from "../src/providers/antigravity.ts";
 import { StringEnum } from "../src/utils/typebox-helpers.ts";
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.ts";
 import { hasBedrockCredentials } from "./bedrock-utils.ts";
@@ -348,6 +349,22 @@ async function multiTurn<TApi extends Api>(model: Model<TApi>, options?: StreamO
 }
 
 describe("Generate E2E Tests", () => {
+	describe.skipIf(process.env.PI_TEST_ANTIGRAVITY !== "1")("Antigravity subscription", () => {
+		for (const id of ["gemini-3.8-flash-low", "claude-sonnet-4-6"]) {
+			it(`${id}: text, tools, streaming and images`, async () => {
+				const apiKey = await resolveApiKey("antigravity");
+				if (!apiKey) throw new Error("Log in to antigravity before running PI_TEST_ANTIGRAVITY");
+				const model = antigravityProvider()
+					.getModels()
+					.find((entry) => entry.id === id)!;
+				await basicTextGeneration(model, { apiKey });
+				await handleToolCall(model, { apiKey });
+				await handleStreaming(model, { apiKey });
+				await handleImage(model, { apiKey });
+			}, 120000);
+		}
+	});
+
 	describe.skipIf(!process.env.GEMINI_API_KEY)("Gemini Provider (gemini-2.5-flash)", () => {
 		const llm = getModel("google", "gemini-2.5-flash");
 

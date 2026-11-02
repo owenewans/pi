@@ -1,5 +1,6 @@
 import type { TelemetrySpan } from "@earendil-works/pi-telemetry";
 import type { AnthropicOptions } from "./api/anthropic-messages.ts";
+import type { AntigravityOptions } from "./api/antigravity.ts";
 import type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 import type { BedrockOptions } from "./api/bedrock-converse-stream.ts";
 import type { GoogleOptions } from "./api/google-generative-ai.ts";
@@ -62,6 +63,7 @@ export type {
 export type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
 export type KnownApi =
+	| "antigravity"
 	| "openai-completions"
 	| "mistral-conversations"
 	| "openai-responses"
@@ -88,6 +90,7 @@ export type KnownClassifierApi =
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
 export type KnownProvider =
+	| "antigravity"
 	| "amazon-bedrock"
 	| "ant-ling"
 	| "anthropic"
@@ -288,6 +291,7 @@ export type DeferredCancelOptions = ProviderRequestOptions<Model<Api>>;
  * this is tree-shake safe.
  */
 export interface ApiOptionsMap {
+	antigravity: AntigravityOptions;
 	"anthropic-messages": AnthropicOptions;
 	"openai-completions": OpenAICompletionsOptions;
 	"openai-responses": OpenAIResponsesOptions;

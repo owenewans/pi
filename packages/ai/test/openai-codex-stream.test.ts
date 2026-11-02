@@ -2744,3 +2744,49 @@ describe("openai-codex streaming", () => {
 		expect(codexRequests).toBe(4);
 	});
 });
+
+describe("Codex hosted web search", () => {
+	it.each([undefined, "live", "cached"] as const)("declares hosted search only when requested: %s", async (mode) => {
+		const requests: Record<string, unknown>[] = [];
+		const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+			requests.push(decodeCodexRequestBody(init?.body)!);
+			return new Response(buildSSEPayload({ status: "completed" }), {
+				headers: { "content-type": "text/event-stream" },
+			});
+		});
+		const model: Model<"openai-codex-responses"> = {
+			id: "fixture-codex",
+			name: "fixture",
+			provider: "openai-codex",
+			api: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 10000,
+			maxTokens: 1000,
+		};
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "query", timestamp: 1 }],
+			tools: [{ name: "fixture", description: "fixture", parameters: Type.Object({}) }],
+		});
+		const result = await streamOpenAICodexResponses(model, context, {
+			apiKey: mockToken(),
+			transport: "sse",
+			fetch,
+			webSearch: mode,
+		}).result();
+		expect(result.stopReason).toBe("stop");
+		const body = requests[0];
+		const tools = body.tools as { type: string; external_web_access?: boolean }[];
+		expect(tools.some((tool) => tool.type === "function")).toBe(true);
+		if (mode) {
+			expect(tools).toContainEqual({ type: "web_search", external_web_access: mode === "live" });
+			expect(body.include).toContain("web_search_call.action.sources");
+		} else {
+			expect(tools.some((tool) => tool.type === "web_search")).toBe(false);
+			expect(body.include).not.toContain("web_search_call.action.sources");
+		}
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+});

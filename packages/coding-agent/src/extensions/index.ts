@@ -1,7 +1,9 @@
 import type { InlineExtension } from "../core/extensions/types.ts";
+import antigravityExtension from "./antigravity/index.ts";
 import browserExtension from "./browser/index.ts";
 import codeExtension from "./code/index.ts";
 import codemodeExtension from "./codemode/index.ts";
+import codexSearchExtension from "./codex-search/index.ts";
 import context7Extension from "./context7/index.ts";
 import llamaExtension from "./llama/index.ts";
 import mcpExtension from "./mcp/index.ts";
@@ -18,6 +20,8 @@ import workflowExtension from "./workflow/index.ts";
 import zedExtension from "./zed/index.ts";
 
 export const builtInExtensions: InlineExtension[] = [
+	{ name: "antigravity", factory: antigravityExtension, builtin: true },
+	{ name: "codex-search", factory: codexSearchExtension, builtin: true },
 	{ name: "profile", factory: profileExtension, builtin: true },
 	{ name: "browser", factory: browserExtension, builtin: true },
 	{ name: "telegram", factory: telegramExtension, builtin: true },

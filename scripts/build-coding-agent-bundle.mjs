@@ -194,6 +194,10 @@ for (const entry of [
 
 rmSync(bundleDir, { force: true, recursive: true });
 mkdirSync(bundleDir, { recursive: true });
+writeFileSync(
+	join(bundleDir, "license.antigravity"),
+	readFileSync(join(codingAgentDistDir, "licenses", "antigravity")),
+);
 
 const mainResult = await build({
 	...commonBuildOptions(),
@@ -234,6 +238,7 @@ if (dirname(bedrockLoaderOutput) !== dirname(oauthLoaderOutput)) {
 // worker URL, so the main bundle cannot follow them. Emit one self-contained
 // file per implementation beside the code that resolves it.
 const lazyEntryPoints = {
+	antigravity: join(aiDistDir, "auth", "oauth", "antigravity.js"),
 	anthropic: join(aiDistDir, "auth", "oauth", "anthropic.js"),
 	"bedrock-converse-stream": join(
 		aiDistDir,

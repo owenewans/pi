@@ -11,6 +11,7 @@
  */
 
 export * from "./api/anthropic-messages.lazy.ts";
+export * from "./api/antigravity.lazy.ts";
 export * from "./api/azure-openai-responses.lazy.ts";
 export * from "./api/bedrock-converse-stream.lazy.ts";
 export * from "./api/google-generative-ai.lazy.ts";
@@ -29,6 +30,7 @@ export * from "./legacy-api-aliases.ts";
 export * from "./providers/images/register-builtins.ts";
 
 import { anthropicMessagesApi } from "./api/anthropic-messages.lazy.ts";
+import { antigravityApi } from "./api/antigravity.lazy.ts";
 import { azureOpenAIResponsesApi } from "./api/azure-openai-responses.lazy.ts";
 import { bedrockConverseStreamApi } from "./api/bedrock-converse-stream.lazy.ts";
 import { googleGenerativeAIApi } from "./api/google-generative-ai.lazy.ts";
@@ -178,6 +180,7 @@ export function registerFauxProvider(options: RegisterFauxProviderOptions = {}):
 }
 
 const BUILTIN_APIS: [Api, ProviderStreams][] = [
+	["antigravity", antigravityApi()],
 	["anthropic-messages", anthropicMessagesApi()],
 	["openai-completions", openAICompletionsApi()],
 	["openai-responses", openAIResponsesApi()],

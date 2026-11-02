@@ -91,6 +91,7 @@ function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
 		nvidia: "NVIDIA_API_KEY",
 		deepseek: "DEEPSEEK_API_KEY",
 		google: "GEMINI_API_KEY",
+		antigravity: "ANTIGRAVITY_API_KEY",
 		"google-vertex": "GOOGLE_CLOUD_API_KEY",
 		groq: "GROQ_API_KEY",
 		cerebras: "CEREBRAS_API_KEY",

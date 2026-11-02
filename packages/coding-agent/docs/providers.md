@@ -17,6 +17,24 @@ Run `/logout` and select a provider to remove its stored credential. This does n
 
 `auth.json` can contain API keys and OAuth tokens. Keep it private and do not commit it.
 
+## Codex web search
+
+The native `codex_search` tool uses `/login openai-codex` and OpenAI's hosted search. It returns an answer, source URLs and search actions. `mode: "live"` is the default; `mode: "cached"` uses OpenAI's index. It uses the current Codex model, or the default Codex model when another provider is selected, without switching models or engines after a failure. Search consumes the account's limits and does not require a separate paid API key.
+
+## Antigravity
+
+Antigravity runs natively without `npm:pi-antigravity`. Use `/login antigravity` to sign in with Google, then select an `antigravity/` model. Existing Antigravity OAuth credentials in `auth.json` remain compatible. Remove the npm extension from Pi's package list to avoid duplicate providers and tools.
+
+The provider ships a small offline catalog and refreshes available models from the account. Backend runtime IDs remain selectable; familiar grouped model IDs are also available for compatibility. Requested models never silently fail over to another model or account. Google controls eligibility, model availability and quota.
+
+`/usage antigravity` shows aggregate and per-model quota with reset times. Some accounts cannot query aggregate quota; available per-model values still appear. Quotas may share a pool. Weekly or monthly windows are shown only when Google reports them.
+
+The native `google_search` and `generate_image` tools use the same account and provider proxy route. Images default to `.pi/generated-images/`. Account rotation and the npm extension's separate account store are not imported.
+
+OAuth is preferred. For noninteractive requests, `ANTIGRAVITY_API_KEY` accepts JSON with `token` and `projectId`; Pi cannot refresh this access token automatically.
+
+`ANTIGRAVITY_BASE_URL` overrides the HTTPS service endpoint. Custom desktop OAuth clients can use `ANTIGRAVITY_CLIENT_ID` and `ANTIGRAVITY_CLIENT_SECRET`. `ANTIGRAVITY_PROJECT_ID` supplies the project fallback when discovery returns none. API requests, discovery and OAuth follow the configured proxy without direct fallback.
+
 ## Use an API key from the environment
 
 Environment variables are useful in CI and anywhere Pi should not store the key. Set the variable before starting Pi:

@@ -86,6 +86,8 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	textVerbosity?: "low" | "medium" | "high";
 	toolChoice?: "auto" | "none" | "required";
+	/** Enable OpenAI's hosted web search. Omitted by default. */
+	webSearch?: "live" | "cached";
 }
 
 type CodexResponseStatus = "completed" | "incomplete" | "failed" | "cancelled" | "queued" | "in_progress";
@@ -604,6 +606,12 @@ function buildRequestBody(
 			supportsStrictMode,
 			supportsOpenAIGrammarTools,
 		});
+	}
+
+	if (options?.webSearch) {
+		body.tools ??= [];
+		body.tools.push({ type: "web_search", external_web_access: options.webSearch === "live" });
+		body.include?.push("web_search_call.action.sources");
 	}
 
 	if (options?.reasoningEffort !== undefined) {

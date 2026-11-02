@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import { fetchService } from "../src/core/http-dispatcher.ts";
 import usageExtension, { fetchAccountUsage, formatAccountUsage } from "../src/extensions/usage/index.ts";
 
 vi.mock("../src/core/http-dispatcher.ts", () => ({
-	fetchService: (_service: string, input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+	fetchService: vi.fn((_service: string, input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)),
 }));
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.clearAllMocks();
 	vi.useRealTimers();
 });
 
@@ -21,7 +23,7 @@ describe("account usage", () => {
 			createExtensionRuntime(),
 			"builtin:usage",
 		);
-		expect(extension.commands.get("usage")?.description).toBe("Show Claude or ChatGPT account quota");
+		expect(extension.commands.get("usage")?.description).toBe("Show Claude, ChatGPT or Antigravity account quota");
 	});
 
 	it("reads Claude's five-hour quota with OAuth headers", async () => {
@@ -278,7 +280,11 @@ describe("account usage", () => {
 				Response.json({
 					five_hour: { utilization: -10 },
 					seven_day: { utilization: 120, resets_at: "invalid" },
-					extra_usage: { is_enabled: true, monthly_limit: 100, used_credits: 200 },
+					extra_usage: {
+						is_enabled: true,
+						monthly_limit: 100,
+						used_credits: 200,
+					},
 				}),
 			),
 		);
@@ -293,11 +299,17 @@ describe("account usage", () => {
 	it("ignores out-of-range numeric reset timestamps", async () => {
 		vi.stubGlobal(
 			"fetch",
-			vi
-				.fn()
-				.mockResolvedValue(Response.json({ rate_limit: { primary_window: { used_percent: 10, reset_at: 1e30 } } })),
+			vi.fn().mockResolvedValue(
+				Response.json({
+					rate_limit: {
+						primary_window: { used_percent: 10, reset_at: 1e30 },
+					},
+				}),
+			),
 		);
-		expect(await fetchAccountUsage("openai-codex", "fixture")).toEqual({ remaining: 90 });
+		expect(await fetchAccountUsage("openai-codex", "fixture")).toEqual({
+			remaining: 90,
+		});
 	});
 
 	it("reports HTTP status without exposing response bodies", async () => {
@@ -351,5 +363,282 @@ describe("account usage", () => {
 				resetsAt: Date.parse("2026-10-29T03:00:00Z"),
 			}),
 		).toContain("in 0h 0m");
+	});
+});
+
+const antigravityKey = JSON.stringify({
+	token: "private-token",
+	projectId: "fixture-project",
+});
+
+function antigravityFetch(payloads: Record<string, unknown | Response | Error>) {
+	const request = vi.fn(async (url: string) => {
+		const method = url.split(":").at(-1) ?? "";
+		const payload = payloads[method];
+		if (payload instanceof Error) throw payload;
+		return payload instanceof Response ? payload : Response.json(payload ?? {});
+	});
+	vi.stubGlobal("fetch", request);
+	return request;
+}
+
+describe("Antigravity usage", () => {
+	it("uses the service proxy, OAuth envelope and RPC bodies, not inference", async () => {
+		antigravityFetch({
+			fetchAvailableModels: {
+				models: {
+					"gemini-pro": {
+						quotaInfo: {
+							remainingFraction: 0.75,
+							resetTime: "2026-10-29T06:00:00Z",
+						},
+					},
+				},
+			},
+			retrieveUserQuotaSummary: {
+				groups: [
+					{
+						displayName: "Shared",
+						buckets: [{ displayName: "Requests", window: "5h", remainingFraction: 0.5 }],
+					},
+				],
+			},
+			loadCodeAssist: {
+				paidTier: { name: "Google AI Pro" },
+				currentTier: { name: "Free" },
+			},
+		});
+		const usage = await fetchAccountUsage("antigravity", antigravityKey);
+		expect(usage.groups).toEqual([
+			{ label: "Shared / Requests (5h)", quota: { remaining: 50 } },
+			{
+				label: "gemini-pro",
+				quota: { remaining: 75, resetsAt: Date.parse("2026-10-29T06:00:00Z") },
+			},
+		]);
+		for (const [method, body] of [
+			["fetchAvailableModels", { project: "fixture-project" }],
+			["retrieveUserQuotaSummary", {}],
+		] as const) {
+			expect(fetchService).toHaveBeenCalledWith(
+				"usage",
+				`https://daily-cloudcode-pa.googleapis.com/v1internal:${method}`,
+				{
+					method: "POST",
+					headers: {
+						Authorization: "Bearer private-token",
+						"Content-Type": "application/json",
+						"User-Agent": expect.stringContaining("antigravity/cli/"),
+					},
+					body: JSON.stringify(body),
+					signal: expect.any(AbortSignal),
+				},
+			);
+		}
+		const output = formatAccountUsage(usage);
+		expect(output).toContain("Antigravity (Google AI Pro)");
+		expect(output).toContain("Shared quota pools");
+		expect(output).toContain("gemini-pro [:::::::::::::::     ] left 75%");
+		expect(output).not.toMatch(/Weekly|Monthly|private-token|fixture-project/);
+	});
+
+	it("keeps free-tier model quotas when aggregate summary returns 403", async () => {
+		antigravityFetch({
+			fetchAvailableModels: {
+				models: { claude: { quotaInfo: { remainingFraction: 0 } } },
+			},
+			retrieveUserQuotaSummary: new Response("private-token SUBSCRIPTION_REQUIRED", { status: 403 }),
+			loadCodeAssist: { currentTier: { name: "Free" } },
+		});
+		const output = formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey));
+		expect(output).toContain("claude [                    ] left 0%");
+		expect(output).toContain("Aggregate quota unavailable: Account quota HTTP 403");
+		expect(output).toContain("Antigravity (Free)");
+		expect(output).not.toContain("private-token");
+	});
+
+	it("keeps aggregate quotas when models and optional tier fail", async () => {
+		antigravityFetch({
+			fetchAvailableModels: new Error("private-token"),
+			retrieveUserQuotaSummary: {
+				groups: [{ buckets: [{ bucketId: "pool", remainingFraction: 0.2 }] }],
+			},
+			loadCodeAssist: new Response("private-token", { status: 401 }),
+		});
+		const output = formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey));
+		expect(output).toContain("pool [::::                ] left 20%");
+		expect(output).toContain("Model quota unavailable");
+		expect(output).not.toContain("private-token");
+	});
+
+	it.each([null, "0.8", undefined])(
+		"does not invent quotas from missing or malformed fractions: %j",
+		async (remainingFraction) => {
+			antigravityFetch({
+				fetchAvailableModels: {
+					models: {
+						unknown: { quotaInfo: { remainingFraction, resetTime: "invalid" } },
+						missing: {},
+						invalid: null,
+					},
+				},
+				retrieveUserQuotaSummary: {
+					groups: [{ buckets: [{ bucketId: "pool", remainingFraction }] }, { buckets: {} }, null],
+				},
+			});
+			const output = formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey));
+			expect(output).toContain("unknown: unavailable");
+			expect(output).toContain("missing: unavailable");
+			expect(output).toContain("pool: unavailable");
+			expect(output).not.toMatch(/100%|Weekly|Monthly/);
+		},
+	);
+
+	it("clamps fractions and validates resets", async () => {
+		antigravityFetch({
+			fetchAvailableModels: {
+				models: {
+					low: { quotaInfo: { remainingFraction: -1, resetTime: "invalid" } },
+					high: { quotaInfo: { remainingFraction: 2, resetTime: 1e30 } },
+				},
+			},
+		});
+		expect((await fetchAccountUsage("antigravity", antigravityKey)).groups).toEqual([
+			{ label: "high", quota: { remaining: 100 } },
+			{ label: "low", quota: { remaining: 0 } },
+		]);
+	});
+
+	it.each([null, [], { groups: {} }, { groups: [null, { buckets: null }] }])(
+		"handles malformed summaries: %j",
+		async (summary) => {
+			antigravityFetch({
+				fetchAvailableModels: { models: [] },
+				retrieveUserQuotaSummary: summary,
+			});
+			expect(formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey))).toContain(
+				"Quota: unavailable",
+			);
+		},
+	);
+
+	it.each(["opaque", "{}", '{"token":"private-token"}', '{"projectId":"project"}', "[]"])(
+		"rejects malformed OAuth credentials before fetching: %s",
+		async (key) => {
+			const request = antigravityFetch({});
+			await expect(fetchAccountUsage("antigravity", key)).rejects.toThrow(
+				"Invalid Antigravity OAuth credentials; use /login",
+			);
+			expect(request).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		[new Response("secret", { status: 401 }), "HTTP 401"],
+		[new Response("not json"), "Invalid account quota response"],
+		[new Error("private-token"), "check the connection and proxy"],
+	])("reports sanitized errors if both quota endpoints fail", async (failure, message) => {
+		antigravityFetch({
+			fetchAvailableModels: failure,
+			retrieveUserQuotaSummary: new Response("secret", { status: 403 }),
+		});
+		await expect(fetchAccountUsage("antigravity", antigravityKey)).rejects.toThrow(message);
+	});
+
+	it.each(["", "antigravity"])("dispatches current or explicit Antigravity provider: %j", async (args) => {
+		antigravityFetch({
+			fetchAvailableModels: {
+				models: { gemini: { quotaInfo: { remainingFraction: 0.5 } } },
+			},
+		});
+		const extension = await loadExtensionFromFactory(
+			usageExtension,
+			process.cwd(),
+			createEventBus(),
+			createExtensionRuntime(),
+			"builtin:usage",
+		);
+		const command = extension.commands.get("usage");
+		if (!command) throw new Error("usage command missing");
+		const notify = vi.fn();
+		const getApiKeyForProvider = vi.fn().mockResolvedValue(antigravityKey);
+		await command.handler(args, {
+			model: { provider: args ? "anthropic" : "antigravity" },
+			ui: { notify },
+			modelRegistry: {
+				getAll: () => [{ provider: "antigravity" }],
+				isUsingOAuth: () => true,
+				getApiKeyForProvider,
+			},
+		} as unknown as Parameters<typeof command.handler>[1]);
+		expect(getApiKeyForProvider).toHaveBeenCalledWith("antigravity");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("gemini [::::::::::          ] left 50%"), "info");
+	});
+
+	it.each([
+		["claude", "anthropic"],
+		["chatgpt", "openai-codex"],
+		["openai", "openai-codex"],
+	])("preserves provider alias %s", async (alias, provider) => {
+		const request = vi.fn().mockResolvedValue(
+			Response.json({
+				five_hour: { utilization: 25 },
+				rate_limit: { primary_window: { used_percent: 25 } },
+			}),
+		);
+		vi.stubGlobal("fetch", request);
+		const extension = await loadExtensionFromFactory(
+			usageExtension,
+			process.cwd(),
+			createEventBus(),
+			createExtensionRuntime(),
+			"builtin:usage",
+		);
+		const command = extension.commands.get("usage");
+		if (!command) throw new Error("usage command missing");
+		const notify = vi.fn();
+		const getApiKeyForProvider = vi.fn().mockResolvedValue("fixture");
+		await command.handler(alias, {
+			ui: { notify },
+			modelRegistry: {
+				getAll: () => [{ provider }],
+				isUsingOAuth: () => true,
+				getApiKeyForProvider,
+			},
+		} as unknown as Parameters<typeof command.handler>[1]);
+		expect(getApiKeyForProvider).toHaveBeenCalledWith(provider);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage [:::::::::::::::     ] left 75%"), "info");
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(["not-oauth", "missing", "error"])("handles command auth failure: %s", async (state) => {
+		const request = antigravityFetch({});
+		const extension = await loadExtensionFromFactory(
+			usageExtension,
+			process.cwd(),
+			createEventBus(),
+			createExtensionRuntime(),
+			"builtin:usage",
+		);
+		const command = extension.commands.get("usage");
+		if (!command) throw new Error("usage command missing");
+		const notify = vi.fn();
+		await command.handler("antigravity", {
+			ui: { notify },
+			modelRegistry: {
+				getAll: () => [{ provider: "antigravity" }],
+				isUsingOAuth: () => state !== "not-oauth",
+				getApiKeyForProvider: async () => {
+					if (state === "error") throw new Error("private-token");
+					return undefined;
+				},
+			},
+		} as unknown as Parameters<typeof command.handler>[1]);
+		expect(request).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("/login"),
+			state === "not-oauth" ? "warning" : "error",
+		);
+		expect(JSON.stringify(notify.mock.calls)).not.toContain("private-token");
 	});
 });
