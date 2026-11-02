@@ -3,9 +3,9 @@ name: readme
 description: Write or revise a project README in owenewans's compact technical style, with a centered header, repository counter and verified commands.
 ---
 
-Inspect the source, build files, CLI help, configuration, tests, license and git remotes before writing. Document the current implementation, not plans. Keep useful existing facts and upstream attribution. Ask only when a missing fact prevents correct work.
+Inspect the source, build files, CLI help, configuration, tests, license and git remotes before writing. Read the user's supplied README examples, not just this template. Document the current implementation, not plans. Keep useful existing facts, filename conventions and upstream attribution. Ask only when a missing fact prevents correct work.
 
-Write in English unless requested otherwise. Use lowercase section headings, compact sentences, concrete behavior and exact technical names. No hype, emoji, generic introductions, repeated summaries, community boilerplate or badge walls. A small project may need only a header and a few paragraphs; do not fill a fixed outline.
+Write in English unless requested otherwise. Use lowercase section headings, compact sentences, concrete behavior and exact technical names. No hype, emoji, generic introductions, repeated summaries, community boilerplate or badge walls. A small project may need only a header and a few paragraphs; do not fill a fixed outline. A README is not a task diary, commit message, changelog or report to the user. Keep instructions to the agent and local verification history out of public copy.
 
 Use this header shape, replacing every placeholder with verified project details:
 
@@ -31,6 +31,6 @@ Features describe implemented capabilities. State supported systems, architectur
 
 Give prerequisites and short runnable command blocks with the real clone URL, build targets, executable paths and install options. Explain necessary privileges, output locations and defaults. Use tables for shortcuts or configuration paths when they improve lookup. Examples contain no real credentials. Include operational limits, destructive behavior and rollback details only where applicable.
 
-Run the documented checks that are practical in the current environment. Distinguish automated coverage, manual verification and untested platforms. Never present an unrun command as verified. Check local links and file-name casing, especially `license` versus `LICENSE`. Link the existing license; do not choose or change it while writing a README.
+Run the documented checks that are practical in the current environment. Verify the actual entry point and use commands compatible with the intended shell. Distinguish automated coverage, manual verification and untested platforms. Never present an unrun command as verified. Check local links and file-name casing, especially `license` versus `LICENSE`. Link the existing license; do not choose or change it while writing a README.
 
 Write the requested README file and report the change briefly. Do not add unrelated documentation or commit unless asked.

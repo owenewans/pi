@@ -55,6 +55,9 @@ describe("identity setup", () => {
 			"humanizer",
 			"init",
 			"learn-from-feedback",
+			"readme",
+			"research",
+			"verify",
 		]);
 	});
 

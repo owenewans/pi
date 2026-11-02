@@ -10,6 +10,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -519,6 +520,30 @@ Content`,
 
 			const { agentsFiles } = loader.getAgentsFiles();
 			expect(agentsFiles.some((f) => f.path.includes("AGENTS.md"))).toBe(true);
+		});
+
+		it("loads durable global rules automatically and refreshes them without replacing the user's preamble", async () => {
+			const rulesPath = join(agentDir, "AGENTS.md");
+			writeFileSync(rulesPath, "global fixture rule");
+			writeFileSync(join(agentDir, "experiences.md"), "obsolete fixture note");
+			writeFileSync(join(cwd, "AGENTS.md"), "project fixture rule");
+			const loader = new DefaultResourceLoader({ cwd, agentDir, noExtensions: true, noSkills: true });
+			await loader.reload();
+			const prompt = () =>
+				buildSystemPrompt({
+					cwd,
+					customPrompt: "user preamble",
+					contextFiles: loader.getAgentsFiles().agentsFiles,
+				});
+			expect(prompt()).toContain("user preamble");
+			expect(prompt()).toContain("global fixture rule");
+			expect(prompt()).toContain("project fixture rule");
+			expect(prompt()).not.toContain("obsolete fixture note");
+			expect(loader.getAgentsFiles().agentsFiles[0].path).toBe(rulesPath);
+			writeFileSync(rulesPath, "updated global fixture rule");
+			await loader.reload();
+			expect(loader.getAgentsFiles().agentsFiles[0].content).toBe("updated global fixture rule");
+			expect(prompt()).toContain("updated global fixture rule");
 		});
 
 		it("should prefer AGENTS.override.md within each directory while preserving ancestor layering", async () => {
