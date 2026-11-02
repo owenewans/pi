@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { antigravityApi } from "../src/api/antigravity.lazy.ts";
@@ -262,6 +263,33 @@ describe("Antigravity native streaming", () => {
 			});
 			expect(payload.request.sessionId).toMatch(/^-?\d+$/);
 			expect(payload.requestId).toMatch(/^agent\//);
+		},
+	);
+
+	it.each(["session", "-1", "9223372036854775807", "9223372036854775808"])(
+		"preserves stable metadata with Web Crypto for session %s",
+		async (sessionId) => {
+			const { fetch } = mockFetch([candidate([{ text: "ok" }], "STOP")]);
+			const result = await stream(model, context, { apiKey, fetch, sessionId }).result();
+			expect(result.stopReason).toBe("stop");
+			const payload = JSON.parse(String(fetch.mock.calls[0][1]?.body));
+			const uuid = (seed: string) => {
+				const bytes = createHash("sha1").update(seed).digest().subarray(0, 16);
+				bytes[6] = (bytes[6] & 15) | 80;
+				bytes[8] = (bytes[8] & 63) | 128;
+				const hex = bytes.toString("hex");
+				return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+			};
+			const trajectory = uuid(`antigravity:traj:session:${sessionId}`);
+			expect(payload.request.labels.trajectory_id).toBe(trajectory);
+			expect(payload.requestId.split("/")[1]).toBe(uuid(`antigravity:conv:session:${sessionId}`));
+			const numeric =
+				/^-?\d+$/.test(sessionId) && BigInt(sessionId) >= -(1n << 63n) && BigInt(sessionId) < 1n << 63n;
+			expect(payload.request.sessionId).toBe(
+				numeric
+					? sessionId
+					: String(createHash("sha256").update(`antigravity:session:${sessionId}`).digest().readBigInt64LE()),
+			);
 		},
 	);
 

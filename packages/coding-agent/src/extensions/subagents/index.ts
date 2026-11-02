@@ -1,6 +1,7 @@
 // runs isolated agent contexts through the current model runtime.
 import { randomUUID } from "node:crypto";
 import { Agent } from "@earendil-works/pi-agent-core";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionToolContext } from "../../core/extensions/types.ts";
 import { createCodingTools, createReadOnlyTools } from "../../core/tools/index.ts";
@@ -189,6 +190,7 @@ async function runTask(task: Task, ctx: ExtensionToolContext, signal?: AbortSign
 	if (!ctx.model) throw new Error("No model selected for subagent");
 	signal?.throwIfAborted();
 	const servers = new LanguageServers();
+	const sessionId = randomUUID();
 	const agent = new Agent({
 		initialState: {
 			model: ctx.model,
@@ -197,7 +199,7 @@ async function runTask(task: Task, ctx: ExtensionToolContext, signal?: AbortSign
 			tools: task.role === "worker" ? createCodingTools(ctx.cwd) : createReadOnlyTools(ctx.cwd),
 		},
 		streamFn: (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options),
-		sessionId: randomUUID(),
+		sessionId,
 		afterToolCall: async ({ toolCall, args, isError, result: toolResult }, toolSignal) => {
 			if (
 				isError ||
@@ -246,6 +248,10 @@ async function runTask(task: Task, ctx: ExtensionToolContext, signal?: AbortSign
 		};
 	} finally {
 		signal?.removeEventListener("abort", abort);
-		await servers.close();
+		try {
+			cleanupSessionResources(sessionId);
+		} finally {
+			await servers.close();
+		}
 	}
 }

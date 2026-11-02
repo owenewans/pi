@@ -5,8 +5,7 @@
  * It is only intended for CLI use, not browser environments.
  */
 
-import { Type } from "typebox";
-import { Check } from "typebox/value";
+import { compile, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
@@ -58,11 +57,13 @@ function parseAuthorizationInput(input: string): { code?: string; state?: string
 	return { code: value };
 }
 
-const tokenSchema = Type.Object({
-	access_token: Type.String({ minLength: 1 }),
-	refresh_token: Type.Optional(Type.String({ minLength: 1 })),
-	expires_in: Type.Number({ exclusiveMinimum: 0 }),
-});
+const tokenValidator = compile(
+	obj({
+		access_token: str({ minLength: 1 }),
+		refresh_token: opt(str({ minLength: 1 })),
+		expires_in: num({ exclusiveMinimum: 0 }),
+	}),
+);
 
 async function postTokenRequest(body: Record<string, string>, signal: AbortSignal): Promise<string> {
 	const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
@@ -94,7 +95,7 @@ function parseTokenResponse(responseBody: string, previousRefresh?: string): OAu
 		throw new Error("Anthropic OAuth returned invalid JSON");
 	}
 	// token responses cross a network-input boundary; never include their contents in errors.
-	if (!Check(tokenSchema, data)) throw new Error("Anthropic OAuth returned invalid token data");
+	if (!tokenValidator.check(data)) throw new Error("Anthropic OAuth returned invalid token data");
 	const refresh = data.refresh_token ?? previousRefresh;
 	if (!refresh) throw new Error("Anthropic OAuth returned no refresh token");
 	return {

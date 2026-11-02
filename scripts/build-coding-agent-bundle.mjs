@@ -196,7 +196,7 @@ rmSync(bundleDir, { force: true, recursive: true });
 mkdirSync(bundleDir, { recursive: true });
 writeFileSync(
 	join(bundleDir, "license.antigravity"),
-	readFileSync(join(codingAgentDistDir, "licenses", "antigravity")),
+	readFileSync(join(codingAgentDistDir, "licenses", "antigravity", "license")),
 );
 
 const mainResult = await build({

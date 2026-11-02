@@ -7,6 +7,7 @@ import {
 	type FauxResponseStep,
 	fauxAssistantMessage,
 	fauxProvider,
+	registerSessionResourceCleanup,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -14,6 +15,7 @@ import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { LanguageServers } from "../src/extensions/code/lsp.ts";
 import subagentsExtension from "../src/extensions/subagents/index.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -117,6 +119,74 @@ async function settle(runner: ExtensionRunner, outcome: "completed" | "aborted" 
 const task = (role: "scout" | "reviewer" | "worker" = "scout", text = "investigate fixture") => ({ role, task: text });
 
 describe("subagent tool", () => {
+	it.each(["completed", "failed"] as const)("releases child provider resources after a %s task", async (status) => {
+		const fixture = await setup([
+			fauxAssistantMessage("fixture result", { stopReason: status === "failed" ? "error" : "stop" }),
+		]);
+		const stream = vi.spyOn(fixture.registry, "streamSimple");
+		const cleanup = vi.fn();
+		const unregister = registerSessionResourceCleanup(cleanup);
+		try {
+			const [job] = await fixture.execute({ tasks: [task()] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+			const childId = stream.mock.calls[0][2]?.sessionId;
+			expect(childId).toEqual(expect.any(String));
+			expect(cleanup).toHaveBeenCalledExactlyOnceWith(childId);
+			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([{ status }]);
+		} finally {
+			unregister();
+		}
+	});
+
+	it.each(["stop", "tree", "shutdown"] as const)(
+		"waits for a child to finish before cleanup on %s",
+		async (action) => {
+			const blocked = blockedResponse();
+			const fixture = await setup([blocked.response]);
+			const stream = vi.spyOn(fixture.registry, "streamSimple");
+			const cleanup = vi.fn();
+			const unregister = registerSessionResourceCleanup(cleanup);
+			try {
+				const [job] = await fixture.execute({ tasks: [task()] });
+				await vi.waitFor(() => expect(blocked.signal).toBeDefined());
+				const stopping =
+					action === "stop"
+						? fixture.execute({ action: "stop", id: job.id })
+						: action === "tree"
+							? fixture.runner.emit({ type: "session_tree", oldLeafId: "old", newLeafId: "new" })
+							: fixture.runner.emit({ type: "session_shutdown", reason: "quit" });
+				await vi.waitFor(() => expect(blocked.signal?.aborted).toBe(true));
+				expect(cleanup).not.toHaveBeenCalled();
+				blocked.release();
+				await stopping;
+				const childId = stream.mock.calls[0][2]?.sessionId;
+				expect(childId).toEqual(expect.any(String));
+				expect(cleanup).toHaveBeenCalledExactlyOnceWith(childId);
+				expect(fixture.sendMessage).not.toHaveBeenCalled();
+			} finally {
+				unregister();
+			}
+		},
+	);
+
+	it("closes language servers even when provider resource cleanup fails", async () => {
+		const fixture = await setup([fauxAssistantMessage("fixture result")]);
+		const close = vi.spyOn(LanguageServers.prototype, "close");
+		const unregister = registerSessionResourceCleanup(() => {
+			throw new Error("fixture cleanup failure");
+		});
+		try {
+			const [job] = await fixture.execute({ tasks: [task()] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+			expect(close).toHaveBeenCalledTimes(1);
+			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+				{ status: "failed", output: expect.stringContaining("cleanup session resources") },
+			]);
+		} finally {
+			unregister();
+		}
+	});
+
 	it("uses optional tasks so management actions need no dummy tasks", async () => {
 		const fixture = await setup();
 		expect(fixture.tool.parameters).toMatchObject({

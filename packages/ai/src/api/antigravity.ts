@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from "node:crypto";
 import type { Content, GenerateContentResponse } from "@google/genai";
 import { calculateCost } from "../models.ts";
 import type {
@@ -143,32 +142,37 @@ function antigravityContents(model: Model<"antigravity">, context: TranscriptCon
 	return merged;
 }
 
-function stableUuid(seed: string): string {
-	const bytes = createHash("sha1").update(seed).digest().subarray(0, 16);
+async function stableUuid(seed: string): Promise<string> {
+	const hash = await globalThis.crypto.subtle.digest("SHA-1", new TextEncoder().encode(seed));
+	const bytes = new Uint8Array(hash, 0, 16);
 	bytes[6] = (bytes[6] & 15) | 80;
 	bytes[8] = (bytes[8] & 63) | 128;
-	const hex = bytes.toString("hex");
+	const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function sessionMetadata(context: TranscriptContext, explicit?: string) {
+async function sessionMetadata(context: TranscriptContext, explicit?: string) {
 	const first = context.messages[0];
 	const content = first && "content" in first ? first.content : "";
 	const seed = explicit?.trim()
 		? `session:${explicit.trim()}`
 		: first
 			? `${first.role}:${first.timestamp || ""}:${typeof content === "string" ? content.slice(0, 64) : JSON.stringify(content[0] ?? "").slice(0, 64)}`
-			: randomUUID();
+			: globalThis.crypto.randomUUID();
 	const sessionSeed = explicit?.trim() || seed;
 	let sessionId: string;
 	if (/^-?\d+$/.test(sessionSeed) && BigInt(sessionSeed) >= -(1n << 63n) && BigInt(sessionSeed) < 1n << 63n) {
 		sessionId = sessionSeed;
 	} else {
-		sessionId = String(createHash("sha256").update(`antigravity:session:${sessionSeed}`).digest().readBigInt64LE());
+		const hash = await globalThis.crypto.subtle.digest(
+			"SHA-256",
+			new TextEncoder().encode(`antigravity:session:${sessionSeed}`),
+		);
+		sessionId = String(new DataView(hash).getBigInt64(0, true));
 	}
 	return {
-		conversationId: stableUuid(`antigravity:conv:${seed}`),
-		trajectoryId: stableUuid(`antigravity:traj:${seed}`),
+		conversationId: await stableUuid(`antigravity:conv:${seed}`),
+		trajectoryId: await stableUuid(`antigravity:traj:${seed}`),
 		sessionId,
 	};
 }
@@ -303,7 +307,7 @@ function legacySchema(value: unknown, root: unknown = value, refs: string[] = []
 	return result;
 }
 
-function buildPayload(
+async function buildPayload(
 	model: Model<"antigravity">,
 	context: TranscriptContext,
 	project: string,
@@ -323,7 +327,7 @@ function buildPayload(
 		}
 	const system = getInitialSystemMessage(normalized.messages);
 	const systemText = system ? sanitizeSurrogates(getSystemMessageText(system)) : "";
-	const { conversationId, trajectoryId, sessionId } = sessionMetadata(context, options.sessionId);
+	const { conversationId, trajectoryId, sessionId } = await sessionMetadata(context, options.sessionId);
 	const step = Math.max(1, contents.length);
 	const requestIndex = context.messages.filter(
 		(message) => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted",
@@ -337,7 +341,7 @@ function buildPayload(
 		used_non_gemini_model: String(!model.id.startsWith("gemini-")),
 	};
 	if (modelEnums[runtimeId]) labels.model_enum = modelEnums[runtimeId];
-	if (step > 1) labels.last_execution_id = stableUuid(`antigravity:exec:${trajectoryId}:${step - 1}`);
+	if (step > 1) labels.last_execution_id = await stableUuid(`antigravity:exec:${trajectoryId}:${step - 1}`);
 	const mode = tools.length ? resolveGoogleFunctionCallingMode(tools, options.toolChoice, strict) : undefined;
 	return {
 		project,
@@ -460,7 +464,7 @@ export const stream: StreamFunction<"antigravity", AntigravityOptions> = (model,
 				!credentials.projectId.trim()
 			)
 				throw new Error("Antigravity apiKey requires token and projectId");
-			let payload: unknown = buildPayload(model, context, credentials.projectId, options);
+			let payload: unknown = await wait(buildPayload(model, context, credentials.projectId, options));
 			const replacement = await options.onPayload?.(payload, model);
 			if (replacement !== undefined) payload = replacement;
 			const base = (model.baseUrl || "https://daily-cloudcode-pa.googleapis.com").replace(/\/+$/, "");
@@ -542,7 +546,7 @@ export const stream: StreamFunction<"antigravity", AntigravityOptions> = (model,
 						endBlock();
 						const call: ToolCall = {
 							type: "toolCall",
-							id: part.functionCall.id || randomUUID(),
+							id: part.functionCall.id || globalThis.crypto.randomUUID(),
 							name: part.functionCall.name || "",
 							arguments: (part.functionCall.args ?? {}) as ToolCall["arguments"],
 							...(part.thoughtSignature && {
@@ -550,7 +554,7 @@ export const stream: StreamFunction<"antigravity", AntigravityOptions> = (model,
 							}),
 						};
 						if (output.content.some((block) => block.type === "toolCall" && block.id === call.id))
-							call.id = randomUUID();
+							call.id = globalThis.crypto.randomUUID();
 						output.content.push(call);
 						const contentIndex = output.content.length - 1;
 						events.push({
