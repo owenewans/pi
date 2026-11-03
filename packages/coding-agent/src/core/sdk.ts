@@ -1,17 +1,25 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
+import {
+	clampThinkingLevel,
+	cleanupSessionResources,
+	type Message,
+	type Model,
+	streamSimple,
+} from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { AgentSession, markRuntimeStreamFunction } from "./agent-session.ts";
+import { AgentSession, type AgentSessionConfig, markRuntimeStreamFunction } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { getClientIdentity } from "./client-identity.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import { ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher } from "./mcp-servers.ts";
 import { convertToLlm } from "./messages.ts";
+import { ModelRegistry } from "./model-registry.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -46,6 +54,8 @@ import { getBranchSelection } from "./virtual-models.ts";
 setDefaultStreamFn(streamSimple);
 
 export interface CreateAgentSessionOptions {
+	/** Internal host policy. Use ExtensionContext.createChildSession() instead. */
+	childSession?: AgentSessionConfig["childSession"];
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
 	/** Global config directory. Default: ~/.pi/agent */
@@ -452,25 +462,57 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
-	const session = new AgentSession({
-		agent,
-		sessionManager,
-		settingsManager,
-		cwd,
-		scopedModels: options.scopedModels,
-		resourceLoader,
-		customTools: options.customTools,
-		modelRuntime,
-		cacheWarmer,
-		initialActiveToolNames,
-		usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
-		defaultToolModifiers: toolModifiers,
-		allowedToolNames,
-		excludedToolNames,
-		extensionRunnerRef,
-		sessionStartEvent: options.sessionStartEvent,
-	});
-
+	let session: AgentSession;
+	try {
+		session = new AgentSession({
+			childSession: options.childSession,
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd,
+			scopedModels: options.scopedModels,
+			resourceLoader,
+			customTools: options.customTools,
+			modelRuntime,
+			cacheWarmer,
+			initialActiveToolNames,
+			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
+			defaultToolModifiers: toolModifiers,
+			allowedToolNames,
+			excludedToolNames,
+			extensionRunnerRef,
+			sessionStartEvent: options.sessionStartEvent,
+		});
+	} catch (error) {
+		if (options.childSession) {
+			const extensions = resourceLoader.getExtensions();
+			const runner =
+				extensionRunnerRef.current ??
+				new ExtensionRunner(
+					extensions.extensions,
+					extensions.runtime,
+					cwd,
+					sessionManager,
+					new ModelRegistry(modelRuntime, { readOnly: true, sessionId: sessionManager.getSessionId() }),
+				);
+			try {
+				await emitSessionShutdownEvent(runner, {
+					type: "session_shutdown",
+					reason: "quit",
+				});
+			} finally {
+				try {
+					runner.invalidate();
+					agent.abort();
+					cacheWarmer.cancel();
+				} finally {
+					modelRuntime.clearSessionVirtualModels(sessionManager.getSessionId());
+					cleanupSessionResources(sessionManager.getSessionId());
+				}
+			}
+		}
+		throw error;
+	}
 	const extensionsResult = resourceLoader.getExtensions();
 
 	return {

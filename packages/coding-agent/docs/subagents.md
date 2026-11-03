@@ -8,10 +8,12 @@ The `subagent` tool starts background tasks and returns their IDs immediately. T
 
 Each task needs a self-contained instruction. Children have independent conversation contexts and do not receive the parent transcript.
 
-- `scout` and `reviewer` have read-only file tools.
-- `worker` has read, bash, edit and write tools. Its writes receive language-server diagnostics when an appropriate server is available.
+- `scout` and `reviewer` can call only `read`, `grep`, `find` and `ls`. Nested calls and startup hooks cannot activate other tools.
+- `worker` inherits the parent's active tools and tool restrictions, including extension tools, except `subagent`.
 
-Children share the working directory and filesystem. Assign workers non-overlapping changes; no worktrees are created automatically. Children use the current model and model registry, including the configured provider route. They do not load extension tools or delegate further.
+Children share the working directory and filesystem. Assign workers non-overlapping changes; no worktrees are created automatically. Children use native agent sessions with the same model runtime and provider route. They cannot switch models or register providers. Each child reruns the parent's approved extension factories with its own runner, hooks, event bus and factory-local state. Module globals remain shared; extensions must manage shared resources per session. CLI and inline extensions, effective flags, resources, agent directory and project trust are inherited without package installation or fresh discovery.
+
+Children have in-memory settings and sessions. Parent tasks and continuous goals are not copied. Children cannot delegate through `subagent` or the child-session API. Extension code still runs with host permissions; read-only roles restrict tool calls, not arbitrary extension code.
 
 ## Manage jobs
 
@@ -25,6 +27,12 @@ Children share the working directory and filesystem. Assign workers non-overlapp
 
 At most four children run per session, across all calls. The last 32 jobs remain available in memory; older finished jobs are removed when necessary. Each output is limited to 50,000 characters.
 
-Children survive parent turns and interrupts. Explicitly stopping a child suppresses its completion notification. Changing branches or ending the session aborts all children and waits for cleanup; results cannot leak into another branch.
+Children survive parent turns and interrupts. Explicitly stopping a child suppresses its completion notification. Changing branches or ending the session aborts all children and waits for cleanup; results cannot leak into another branch. Child sessions emit `session_shutdown` and release provider resources after completion, failure or cancellation.
 
 Results received during parent work enter the transcript without interrupting its response, then trigger continuation at the next normal settlement. An explicit parent interrupt cancels that continuation, not the children or their stored results. Results received during manual compaction remain available for the next prompt.
+
+## Extension hosts
+
+`ctx.createChildSession({ instructions, readOnly })` creates a native child without exposing the parent runtime. `instructions` are appended to the inherited system prompt. Call `prompt(text)` and always await `dispose()` in `finally`; disposal emits shutdown and releases session resources. `abort()` stops the current child run. Nested children are rejected.
+
+This API requires a bound session host and a resource loader with `createChildLoader(settingsManager)`. `DefaultResourceLoader` supplies an isolated snapshot of approved factories and effective resources. Custom loaders must provide equivalent cloning; unsupported loaders fail explicitly. Bare `ExtensionRunner` fixtures must inject `createChildSession` through their context actions or use a native session fixture.

@@ -47,9 +47,17 @@ export { clearApiKeyCache } from "./provider-composer.ts";
  */
 export class ModelRegistry {
 	private readonly runtime: ModelRuntime;
+	private readonly readOnly: boolean;
+	private readonly sessionId: string | undefined;
 
-	constructor(runtime: ModelRuntime) {
+	constructor(runtime: ModelRuntime, options: { readOnly?: boolean; sessionId?: string } = {}) {
 		this.runtime = runtime;
+		this.readOnly = options.readOnly ?? false;
+		this.sessionId = options.sessionId;
+	}
+
+	private assertWritable(): void {
+		if (this.readOnly) throw new Error("Child sessions cannot change the model registry");
 	}
 
 	/** Reload models.json asynchronously. Await before making synchronous registry reads. */
@@ -136,7 +144,11 @@ export class ModelRegistry {
 
 	/** Stream with provider-neutral options and request-time authentication. */
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
-		return this.runtime.streamSimple(model, context, options);
+		return this.runtime.streamSimple(
+			model,
+			context,
+			this.sessionId ? { ...options, sessionId: options?.sessionId ?? this.sessionId } : options,
+		);
 	}
 
 	complete<TApi extends Api>(
@@ -210,6 +222,7 @@ export class ModelRegistry {
 	registerProvider(provider: Provider): void;
 	registerProvider(providerName: string, config: ProviderConfigInput): void;
 	registerProvider(providerOrName: Provider | string, config?: ProviderConfigInput): void {
+		this.assertWritable();
 		if (typeof providerOrName === "string") {
 			if (!config) throw new Error("Provider config is required when registering by name");
 			this.runtime.registerProvider(providerOrName, config);
@@ -219,14 +232,17 @@ export class ModelRegistry {
 	}
 
 	unregisterProvider(providerName: string): void {
+		this.assertWritable();
 		this.runtime.unregisterProvider(providerName);
 	}
 
 	registerVirtualModel(definition: VirtualModelDefinition): void {
+		this.assertWritable();
 		this.runtime.registerVirtualModel(definition);
 	}
 
 	unregisterVirtualModel(providerName: string, id: string): void {
+		this.assertWritable();
 		this.runtime.unregisterVirtualModel(providerName, id);
 	}
 

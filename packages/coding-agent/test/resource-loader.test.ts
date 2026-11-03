@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -29,6 +30,72 @@ describe("DefaultResourceLoader", () => {
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	describe("createChildLoader", () => {
+		it("reuses approved CLI and inline factories, effective flags and resources without discovery or package resolution", async () => {
+			const path = join(tempDir, "cli-extension.ts");
+			writeFileSync(
+				path,
+				'export default function(pi) { pi.registerFlag("cli-fixture", { type: "string", default: "default" }); }',
+			);
+			mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+			writeFileSync(
+				join(cwd, ".pi", "extensions", "ignored.ts"),
+				'throw new Error("must not load ignored project extension")',
+			);
+			writeFileSync(join(agentDir, "AGENTS.md"), "custom agent directory");
+			const seen: unknown[] = [];
+			const settings = SettingsManager.inMemory({}, { projectTrusted: false });
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: settings,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				additionalExtensionPaths: [path],
+				systemPrompt: "effective system",
+				appendSystemPrompt: ["effective append"],
+				extensionFactories: [
+					(pi) => {
+						pi.registerFlag("inline-fixture", {
+							type: "string",
+							default: "default",
+						});
+						seen.push(pi.getFlag("inline-fixture"));
+					},
+				],
+			});
+			await loader.reload();
+			loader.getExtensions().runtime.flagValues.set("cli-fixture", "cli-value");
+			loader.getExtensions().runtime.flagValues.set("inline-fixture", "inline-value");
+			writeFileSync(path, 'throw new Error("changed source must not execute")');
+			const resolve = vi.spyOn(DefaultPackageManager.prototype, "resolve");
+			const resolveSources = vi.spyOn(DefaultPackageManager.prototype, "resolveExtensionSources");
+			try {
+				const child = await loader.createChildLoader(SettingsManager.inMemory({}, { projectTrusted: false }));
+				await child.reload();
+				expect(resolve).not.toHaveBeenCalled();
+				expect(resolveSources).not.toHaveBeenCalled();
+				expect(child.getExtensions().errors).toEqual([]);
+				expect(child.getExtensions().extensions.map((extension) => extension.path)).toEqual([path, "<inline:1>"]);
+				expect(child.getExtensions().runtime).not.toBe(loader.getExtensions().runtime);
+				expect(child.getExtensions().runtime.flagValues.get("cli-fixture")).toBe("cli-value");
+				expect(seen).toEqual(["default", "inline-value", "inline-value"]);
+				expect(child.getAgentsFiles()).toEqual(loader.getAgentsFiles());
+				expect(child.getSystemPrompt()).toBe("effective system");
+				expect(child.getAppendSystemPrompt()).toEqual(["effective append"]);
+				child.getExtensions().runtime.flagValues.set("inline-fixture", "child-only");
+				expect(loader.getExtensions().runtime.flagValues.get("inline-fixture")).toBe("inline-value");
+				expect(child.getSkills()).toEqual(loader.getSkills());
+				expect(child.getPrompts()).toEqual(loader.getPrompts());
+			} finally {
+				resolve.mockRestore();
+				resolveSources.mockRestore();
+			}
+		});
 	});
 
 	describe("reload", () => {

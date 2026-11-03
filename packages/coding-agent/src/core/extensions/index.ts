@@ -50,6 +50,8 @@ export type {
 	BuildSystemPromptOptions,
 	CacheWarmingDecisionEvent,
 	CacheWarmingDecisionEventResult,
+	ChildSession,
+	ChildSessionOptions,
 	CompactionEntryDraft,
 	// Context
 	CompactOptions,

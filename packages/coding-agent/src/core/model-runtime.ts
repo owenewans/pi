@@ -180,6 +180,7 @@ export class ModelRuntime implements Models {
 	private readonly extensionProviders = new Map<string, ProviderConfigInput>();
 	/** Virtual models by provider id, then model id. */
 	private readonly virtualModels = new Map<string, Map<string, RegisteredVirtualModel>>();
+	private readonly sessionVirtualModels = new Map<string, Map<string, VirtualModelDefinition["route"]>>();
 	private readonly compositionErrors = new Map<string, string>();
 	private readonly modelsPath: string | undefined;
 	private readonly modelNetworkEnabled: boolean;
@@ -738,6 +739,7 @@ export class ModelRuntime implements Models {
 					reason: "direct",
 					thinkingLevel: options?.reasoning ?? "off",
 					signal: options?.signal,
+					sessionId: options?.sessionId,
 				});
 				const { maxTokens: limit } = route.model;
 				const maxTokens = options?.maxTokens && limit > 0 ? Math.min(options.maxTokens, limit) : options?.maxTokens;
@@ -990,6 +992,27 @@ export class ModelRuntime implements Models {
 		void this.refresh({ allowNetwork: false });
 	}
 
+	/** session-local route override; catalog entries remain shared. */
+	registerSessionVirtualModel(sessionId: string, definition: VirtualModelDefinition): void {
+		const { provider, id } = definition;
+		if (!this.virtualModels.get(provider)?.has(id)) {
+			throw new Error(`Virtual model ${provider}/${id} is not registered.`);
+		}
+		const routes = this.sessionVirtualModels.get(sessionId) ?? new Map<string, VirtualModelDefinition["route"]>();
+		routes.set(`${provider}\0${id}`, (request) => definition.route(request));
+		this.sessionVirtualModels.set(sessionId, routes);
+	}
+
+	unregisterSessionVirtualModel(sessionId: string, provider: string, id: string): void {
+		const routes = this.sessionVirtualModels.get(sessionId);
+		if (!routes?.delete(`${provider}\0${id}`)) return;
+		if (routes.size === 0) this.sessionVirtualModels.delete(sessionId);
+	}
+
+	clearSessionVirtualModels(sessionId: string): void {
+		this.sessionVirtualModels.delete(sessionId);
+	}
+
 	unregisterVirtualModel(providerId: string, id: string): void {
 		const models = this.virtualModels.get(providerId);
 		if (!models?.delete(id)) return;
@@ -1006,7 +1029,8 @@ export class ModelRuntime implements Models {
 	 *
 	 * `previous` reports the latest successful response in `messages`. A retry passes the failed
 	 * response as `options.failed`; `messages` no longer contains it. `options.state` is the router
-	 * state stored by the caller, which also stores the returned state.
+	 * state stored by the caller, which also stores the returned state. `options.sessionId` selects
+	 * a session-local router when registered; otherwise the global router is used.
 	 */
 	async resolveModel(
 		model: Model<Api>,
@@ -1017,17 +1041,22 @@ export class ModelRuntime implements Models {
 			signal?: AbortSignal;
 			failed?: AssistantMessage;
 			state?: unknown;
+			sessionId?: string;
 		},
 	): Promise<ModelRoute> {
 		const name = `Virtual model ${model.provider}/${model.id}`;
 		const virtual = this.virtualModels.get(model.provider)?.get(model.id);
 		if (!virtual) throw new Error(`${name} is not registered.`);
-		const { failed, ...request } = options;
+		const { failed, sessionId, ...request } = options;
+		const router =
+			(sessionId !== undefined
+				? this.sessionVirtualModels.get(sessionId)?.get(`${model.provider}\0${model.id}`)
+				: undefined) ?? virtual.route;
 		const latest = findLatestResponse(messages);
 		const previousModel = latest && this.getPhysicalModel(latest.provider, latest.model);
 		// A failed routing attempt names the virtual model; there is no physical request to report.
 		const failedModel = failed && this.getPhysicalModel(failed.provider, failed.model);
-		const route = await virtual.route({
+		const route = await router({
 			...request,
 			model,
 			previous: previousModel && { model: previousModel, thinkingLevel: latest?.thinkingLevel },

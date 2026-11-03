@@ -84,6 +84,8 @@ import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type AgentActivityOutcome,
 	type BoundaryContextPreview,
+	type ChildSession,
+	type ChildSessionOptions,
 	type ContextUsage,
 	type ExecuteToolOptions,
 	type ExtensionCommandContextActions,
@@ -131,12 +133,7 @@ import {
 	SessionManager,
 	type SessionProjection,
 } from "./session-manager.ts";
-import {
-	applyToolModifiers,
-	type CacheWarmingMode,
-	DEFAULT_TOOL_NAMES,
-	type SettingsManager,
-} from "./settings-manager.ts";
+import { applyToolModifiers, type CacheWarmingMode, DEFAULT_TOOL_NAMES, SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { BUILTIN_PATH_PREFIX, createSyntheticSourceInfo, isSyntheticPath, type SourceInfo } from "./source-info.ts";
 import {
@@ -263,6 +260,11 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 }
 
 export interface AgentSessionConfig {
+	/** Host-internal restrictions for native child sessions. */
+	childSession?: {
+		readOnly: boolean;
+		isToolAllowed: (name: string) => boolean;
+	};
 	agent: Agent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
@@ -479,6 +481,7 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
+	private _childSession: AgentSessionConfig["childSession"];
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 
 	// Tool registry for extension getTools/setTools
@@ -496,6 +499,7 @@ export class AgentSession {
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 
 	constructor(config: AgentSessionConfig) {
+		this._childSession = config.childSession;
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
@@ -536,6 +540,93 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 		if (this._usesDefaultTools) this._restoreToolsFromTranscript(this._defaultToolModifiers);
+	}
+
+	async createChildSession(options: ChildSessionOptions): Promise<ChildSession> {
+		if (this._childSession) throw new Error("Subagents cannot create child sessions");
+		if (!this.model) throw new Error("No model selected for child session");
+		if (!this._resourceLoader.createChildLoader)
+			throw new Error("Resource loader does not support isolated children");
+		const model = this.model;
+		const thinkingLevel = this.thinkingLevel;
+		const settingsManager = SettingsManager.inMemory(this.settingsManager.getSettings(), {
+			projectTrusted: this.settingsManager.isProjectTrusted(),
+		});
+		const { createAgentSession } = await import("./sdk.ts");
+		const loader = await this._resourceLoader.createChildLoader(settingsManager);
+		const append = loader.getAppendSystemPrompt();
+		loader.getAppendSystemPrompt = () => [...append, options.instructions];
+		const { session } = await createAgentSession({
+			cwd: this._cwd,
+			resourceLoader: loader,
+			modelRuntime: this._modelRuntime,
+			model,
+			thinkingLevel,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(this._cwd),
+			customTools: this._customTools,
+			childSession: {
+				readOnly: options.readOnly ?? false,
+				isToolAllowed: (name) => this._isAllowedTool(name),
+			},
+		});
+		const errors = loader.getExtensions().errors.map(({ path, error }) => `${path}: ${error}`);
+		let shutdownRequested = false;
+		let disposal: Promise<void> | undefined;
+		const dispose = () => {
+			if (disposal) return disposal;
+			disposal = (async () => {
+				try {
+					await session.abort();
+				} finally {
+					try {
+						await emitSessionShutdownEvent(session.extensionRunner, {
+							type: "session_shutdown",
+							reason: "quit",
+						});
+					} finally {
+						session.dispose();
+					}
+				}
+				if (errors.length) throw new Error(errors.join("\n"));
+			})();
+			return disposal;
+		};
+		try {
+			session.setActiveToolsByName(options.readOnly ? ["read", "grep", "find", "ls"] : this.getActiveToolNames());
+			await session.bindExtensions({
+				mode: "print",
+				abortHandler: () => {
+					void session.abort();
+				},
+				shutdownHandler: () => {
+					shutdownRequested = true;
+					void session.abort();
+				},
+				onError: (error) => errors.push(`${error.extensionPath}: ${error.event}: ${error.error}`),
+			});
+			if (shutdownRequested) throw new Error("Child session shut down during startup");
+			if (errors.length) throw new Error(errors.join("\n"));
+		} catch (error) {
+			try {
+				await dispose();
+			} catch (cleanupError) {
+				throw new AggregateError([error, cleanupError], String(error));
+			}
+			throw error;
+		}
+		return {
+			get messages() {
+				return session.messages;
+			},
+			prompt: async (text) => {
+				if (shutdownRequested || disposal) throw new Error("Child session has shut down");
+				await session.prompt(text, { expandPromptTemplates: false });
+				if (errors.length) throw new Error(errors.join("\n"));
+			},
+			abort: () => session.abort(),
+			dispose,
+		};
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -595,6 +686,7 @@ export class AgentSession {
 		// Route a virtual model first: summaries size their input and output from the model they get.
 		const { model, thinkingLevel } = isVirtualModel(selectedModel)
 			? await this._modelRuntime.resolveModel(selectedModel, convertToLlm(this.messages), {
+					sessionId: this.sessionId,
 					reason: "direct",
 					thinkingLevel: this.thinkingLevel,
 					signal,
@@ -836,6 +928,7 @@ export class AgentSession {
 			const userTurn = context.messages.slice(lastResponse + 1).some((message) => message.role === "user");
 			const state = getVirtualModelState(this.sessionManager.getBranch(), model.provider, model.id);
 			const route = await this._modelRuntime.resolveModel(model, convertToLlm(context.messages), {
+				sessionId: this.sessionId,
 				reason: failed ? "retry" : userTurn ? "user" : "continuation",
 				thinkingLevel,
 				signal,
@@ -1445,6 +1538,7 @@ export class AgentSession {
 			this._cacheWarmer.onWarmed = undefined;
 			this._cacheWarmer.cancel();
 		}
+		this._modelRuntime.clearSessionVirtualModels(this.sessionId);
 		cleanupSessionResources(this.sessionId);
 	}
 
@@ -1571,6 +1665,10 @@ export class AgentSession {
 	 * unless the allowlist filters them (see `_allowlistFiltersMcp`).
 	 */
 	private _isAllowedTool(name: string): boolean {
+		if (this._childSession) {
+			if (name === "subagent" || !this._childSession.isToolAllowed(name)) return false;
+			if (this._childSession.readOnly && !["read", "grep", "find", "ls"].includes(name)) return false;
+		}
 		if (this._excludedTools?.(name)) return false;
 		if (!this._allowedTools || this._allowedTools(name)) return true;
 		return !this._allowlistFiltersMcp && isMcpToolName(name);
@@ -2560,6 +2658,7 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>, options: ModelMutationOptions = {}): Promise<void> {
+		if (this._childSession) throw new Error("Child sessions cannot switch models");
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -3507,6 +3606,7 @@ export class AgentSession {
 				refreshTools: () => this._refreshToolRegistry(),
 				getCommands,
 				setModel: async (model) => {
+					if (this._childSession) return false;
 					if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false;
 					await this.setModel(model);
 					return true;
@@ -3515,6 +3615,7 @@ export class AgentSession {
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
 			},
 			{
+				createChildSession: (options) => this.createChildSession(options),
 				getModel: () => this.model,
 				getScopedModels: () => this._scopedModels,
 				isIdle: () => this.isIdle,
@@ -3550,22 +3651,33 @@ export class AgentSession {
 			},
 			{
 				registerProvider: (name, config) => {
+					if (this._childSession) return;
 					this._modelRuntime.registerProvider(name, config);
 					this._refreshCurrentModelFromRegistry();
 				},
 				registerNativeProvider: (provider) => {
+					if (this._childSession) return;
 					this._modelRuntime.registerNativeProvider(provider);
 					this._refreshCurrentModelFromRegistry();
 				},
 				unregisterProvider: (name) => {
+					if (this._childSession) return;
 					this._modelRuntime.unregisterProvider(name);
 					this._refreshCurrentModelFromRegistry();
 				},
 				registerVirtualModel: (definition) => {
+					if (this._childSession) {
+						this._modelRuntime.registerSessionVirtualModel(this.sessionId, definition);
+						return;
+					}
 					this._modelRuntime.registerVirtualModel(definition);
 					this._refreshCurrentModelFromRegistry();
 				},
 				unregisterVirtualModel: (provider, id) => {
+					if (this._childSession) {
+						this._modelRuntime.unregisterSessionVirtualModel(this.sessionId, provider, id);
+						return;
+					}
 					this._modelRuntime.unregisterVirtualModel(provider, id);
 					this._refreshCurrentModelFromRegistry();
 				},
@@ -3720,7 +3832,10 @@ export class AgentSession {
 			extensionsResult.runtime,
 			this._cwd,
 			this.sessionManager,
-			new ModelRegistry(this._modelRuntime),
+			new ModelRegistry(this._modelRuntime, {
+				readOnly: this._childSession !== undefined,
+				sessionId: this._childSession ? this.sessionId : undefined,
+			}),
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;

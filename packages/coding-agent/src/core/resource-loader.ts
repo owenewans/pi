@@ -179,6 +179,8 @@ function omitReplacedExtensions(
 }
 
 export interface ResourceLoader {
+	/** Clone only approved, loaded factories and effective resources; never resolve or install packages. */
+	createChildLoader?(settingsManager: SettingsManager): Promise<ResourceLoader>;
 	getExtensions(): LoadExtensionsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
@@ -452,6 +454,73 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.lastPromptPaths = [];
 		this.lastThemePaths = [];
 		this.loaded = false;
+	}
+
+	async createChildLoader(settingsManager: SettingsManager): Promise<ResourceLoader> {
+		const sources = [...this.extensionsResult.extensions];
+		const child = new DefaultResourceLoader({
+			cwd: this.cwd,
+			agentDir: this.agentDir,
+			settingsManager,
+		});
+		child.skills = this.skills.slice();
+		child.skillDiagnostics = this.skillDiagnostics.slice();
+		child.prompts = this.prompts.slice();
+		child.promptDiagnostics = this.promptDiagnostics.slice();
+		child.themes = this.themes.slice();
+		child.themeDiagnostics = this.themeDiagnostics.slice();
+		child.agentsFiles = this.agentsFiles.map((file) => ({ ...file }));
+		child.systemPrompt = this.systemPrompt;
+		child.systemPromptSourcePath = this.systemPromptSourcePath;
+		child.appendSystemPrompt = this.appendSystemPrompt.slice();
+		child.appendSystemPromptSourcePaths = this.appendSystemPromptSourcePaths.slice();
+		child.lastSkillPaths = this.lastSkillPaths.slice();
+		child.lastPromptPaths = this.lastPromptPaths.slice();
+		child.lastThemePaths = this.lastThemePaths.slice();
+		child.resourceMetadataByPath = new Map(this.resourceMetadataByPath);
+		child.extensionSkillSourceInfos = new Map(this.extensionSkillSourceInfos);
+		child.extensionPromptSourceInfos = new Map(this.extensionPromptSourceInfos);
+		child.extensionThemeSourceInfos = new Map(this.extensionThemeSourceInfos);
+		child.noSkills = this.noSkills;
+		child.noPromptTemplates = this.noPromptTemplates;
+		child.noThemes = this.noThemes;
+		child.skillsOverride = this.skillsOverride;
+		child.promptsOverride = this.promptsOverride;
+		child.themesOverride = this.themesOverride;
+		const flags = new Map(this.extensionsResult.runtime.flagValues);
+		child.reload = async () => {
+			const runtime = createExtensionRuntime();
+			for (const [name, value] of flags) runtime.flagValues.set(name, value);
+			const result: LoadExtensionsResult = {
+				extensions: [],
+				errors: [],
+				runtime,
+			};
+			for (const source of sources) {
+				try {
+					if (!source.factory) throw new Error("Resource loader did not retain the approved extension factory");
+					const extension = await loadExtensionFromFactory(
+						source.factory,
+						child.cwd,
+						child.eventBus,
+						runtime,
+						source.path,
+					);
+					extension.resolvedPath = source.resolvedPath;
+					extension.hidden = source.hidden;
+					extension.replaceable = source.replaceable;
+					extension.sourceInfo = source.sourceInfo;
+					for (const tool of extension.tools.values()) tool.sourceInfo = source.sourceInfo;
+					for (const command of extension.commands.values()) command.sourceInfo = source.sourceInfo;
+					result.extensions.push(extension);
+				} catch (error) {
+					result.errors.push({ path: source.path, error: String(error) });
+				}
+			}
+			child.extensionsResult = result;
+		};
+		await child.reload();
+		return child;
 	}
 
 	getExtensions(): LoadExtensionsResult {

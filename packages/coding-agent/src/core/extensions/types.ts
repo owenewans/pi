@@ -342,6 +342,20 @@ export interface CompactOptions {
  */
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
+export interface ChildSessionOptions {
+	/** Task-specific instructions appended to the inherited system prompt. */
+	instructions: string;
+	readOnly?: boolean;
+}
+
+/** Isolated native session. The owner must await dispose() after completion, prompt errors or cancellation. */
+export interface ChildSession {
+	readonly messages: readonly AgentMessage[];
+	prompt(text: string): Promise<void>;
+	abort(): Promise<void>;
+	dispose(): Promise<void>;
+}
+
 export interface ExtensionContext {
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
@@ -380,6 +394,8 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Trigger compaction without awaiting completion. */
 	compact(options?: CompactOptions): void;
+	/** Create a host-bound child using the same model runtime and approved resources. Nested children are denied. */
+	createChildSession(options: ChildSessionOptions): Promise<ChildSession>;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
 }
@@ -2245,6 +2261,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	createChildSession?: (options: ChildSessionOptions) => Promise<ChildSession>;
 	/** Backs `ExtensionToolContext.executeTool()`. Without it, nested calls fail. */
 	executeTool?: (
 		callerId: string,
@@ -2290,6 +2307,8 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 
 /** Loaded extension with all registered items. */
 export interface Extension {
+	/** Original approved factory, reused to initialize isolated child state without discovery. */
+	factory?: ExtensionFactory;
 	path: string;
 	resolvedPath: string;
 	hidden?: boolean;

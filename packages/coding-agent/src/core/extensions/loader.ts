@@ -623,6 +623,7 @@ async function initializeExtension(
 	runtime: ExtensionRuntime,
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, resolvedPath);
+	extension.factory = factory;
 	const load = createExtensionAPI(extension, runtime, cwd, eventBus);
 	try {
 		await factory(load.api);

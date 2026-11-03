@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -7,17 +7,24 @@ import {
 	type FauxResponseStep,
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxToolCall,
 	registerSessionResourceCleanup,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { createEventBus } from "../src/core/event-bus.ts";
-import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import type { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import type { ExtensionFactory } from "../src/core/extensions/types.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { LanguageServers } from "../src/extensions/code/lsp.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import codeExtension from "../src/extensions/code/index.ts";
+import codemodeExtension from "../src/extensions/codemode/index.ts";
 import subagentsExtension from "../src/extensions/subagents/index.ts";
-import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
+import workflowExtension from "../src/extensions/workflow/index.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 type JobInfo = {
 	id: string;
@@ -29,6 +36,7 @@ type JobInfo = {
 
 let directory: string;
 const runners: ExtensionRunner[] = [];
+const sessions: AgentSession[] = [];
 const releases: (() => void)[] = [];
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "pi-subagents-extension-"));
@@ -37,6 +45,7 @@ beforeEach(() => {
 afterEach(async () => {
 	for (const release of releases.splice(0)) release();
 	for (const runner of runners.splice(0)) await runner.emit({ type: "session_shutdown", reason: "quit" });
+	for (const session of sessions.splice(0)) session.dispose();
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	rmSync(directory, { recursive: true, force: true });
@@ -60,6 +69,7 @@ function blockedResponse(text = "finished") {
 	};
 	return {
 		response,
+		ready,
 		release,
 		get signal() {
 			return signal;
@@ -67,23 +77,50 @@ function blockedResponse(text = "finished") {
 	};
 }
 
-async function setup(responses: FauxResponseStep[] = []) {
-	const runtime = createExtensionRuntime();
+async function setup(
+	responses: FauxResponseStep[] = [],
+	factories: ExtensionFactory[] = [],
+	options: { additionalExtensionPaths?: string[]; excludeTools?: string[] } = {},
+) {
 	const sendMessage = vi.fn();
-	runtime.sendMessage = sendMessage;
-	runtime.getThinkingLevel = () => "off";
-	const extension = await loadExtensionFromFactory(
-		subagentsExtension,
-		directory,
-		createEventBus(),
-		runtime,
-		"builtin:subagents",
-	);
 	const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 	const faux = fauxProvider();
 	faux.setResponses(responses);
 	registry.registerProvider(faux.provider);
-	const runner = new ExtensionRunner([extension], runtime, directory, SessionManager.inMemory(directory), registry);
+	const settingsManager = SettingsManager.inMemory({
+		retry: { enabled: false },
+	});
+	const loader = new DefaultResourceLoader({
+		cwd: directory,
+		agentDir: directory,
+		settingsManager,
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		systemPrompt: "parent system prompt",
+		extensionFactories: [subagentsExtension, ...factories],
+		additionalExtensionPaths: options.additionalExtensionPaths,
+	});
+	await loader.reload();
+	const { session } = await createAgentSession({
+		cwd: directory,
+		agentDir: directory,
+		modelRuntime: getModelRuntime(registry),
+		model: faux.getModel(),
+		thinkingLevel: "off",
+		excludeTools: options.excludeTools,
+		resourceLoader: loader,
+		settingsManager,
+		sessionManager: SessionManager.inMemory(directory),
+	});
+	sessions.push(session);
+	await session.bindExtensions({});
+	const runtime = loader.getExtensions().runtime;
+	runtime.sendMessage = sendMessage;
+	const runner = session.extensionRunner;
+	const extension = loader.getExtensions().extensions.find((extension) => extension.tools.has("subagent"));
+	if (!extension) throw new Error("subagents extension not loaded");
 	runners.push(runner);
 	const registered = extension.tools.get("subagent");
 	if (!registered) throw new Error("subagent tool not registered");
@@ -103,7 +140,17 @@ async function setup(responses: FauxResponseStep[] = []) {
 		});
 		return results;
 	}
-	return { runner, tool, context, registry, faux, sendMessage, execute };
+	return {
+		session,
+		loader,
+		runner,
+		tool,
+		context,
+		registry,
+		faux,
+		sendMessage,
+		execute,
+	};
 }
 
 async function settle(runner: ExtensionRunner, outcome: "completed" | "aborted" | "error" = "completed") {
@@ -123,7 +170,7 @@ describe("subagent tool", () => {
 		const fixture = await setup([
 			fauxAssistantMessage("fixture result", { stopReason: status === "failed" ? "error" : "stop" }),
 		]);
-		const stream = vi.spyOn(fixture.registry, "streamSimple");
+		const stream = vi.spyOn(getModelRuntime(fixture.registry), "streamSimple");
 		const cleanup = vi.fn();
 		const unregister = registerSessionResourceCleanup(cleanup);
 		try {
@@ -143,7 +190,7 @@ describe("subagent tool", () => {
 		async (action) => {
 			const blocked = blockedResponse();
 			const fixture = await setup([blocked.response]);
-			const stream = vi.spyOn(fixture.registry, "streamSimple");
+			const stream = vi.spyOn(getModelRuntime(fixture.registry), "streamSimple");
 			const cleanup = vi.fn();
 			const unregister = registerSessionResourceCleanup(cleanup);
 			try {
@@ -169,16 +216,14 @@ describe("subagent tool", () => {
 		},
 	);
 
-	it("closes language servers even when provider resource cleanup fails", async () => {
+	it("reports provider resource cleanup failures", async () => {
 		const fixture = await setup([fauxAssistantMessage("fixture result")]);
-		const close = vi.spyOn(LanguageServers.prototype, "close");
 		const unregister = registerSessionResourceCleanup(() => {
 			throw new Error("fixture cleanup failure");
 		});
 		try {
 			const [job] = await fixture.execute({ tasks: [task()] });
 			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
-			expect(close).toHaveBeenCalledTimes(1);
 			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
 				{ status: "failed", output: expect.stringContaining("cleanup session resources") },
 			]);
@@ -242,6 +287,27 @@ describe("subagent tool", () => {
 		expect(await fixture.execute({ action: "list" })).toEqual([{ ...job, status: "completed" }]);
 		expect(await fixture.execute({ action: "clear" })).toEqual([]);
 		await expect(fixture.execute({ action: "result", id: job.id })).rejects.toThrow("Unknown subagent");
+	});
+
+	it("keeps a child running when the native parent session is interrupted", async () => {
+		const child = blockedResponse("child completed after interrupt");
+		const parent = blockedResponse("parent interrupted");
+		const fixture = await setup([child.response, parent.response]);
+		const [job] = await fixture.execute({ tasks: [task()] });
+		await vi.waitFor(() => expect(child.signal).toBeDefined());
+		const parentRun = fixture.session.prompt("independent parent work");
+		await vi.waitFor(() => expect(parent.signal).toBeDefined());
+		const interruption = fixture.session.abort();
+		await vi.waitFor(() => expect(parent.signal?.aborted).toBe(true));
+		expect(child.signal?.aborted).toBe(false);
+		parent.release();
+		await Promise.all([parentRun, interruption]);
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([{ status: "running" }]);
+		child.release();
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "child completed after interrupt" },
+		]);
 	});
 
 	it("persists busy completions and requests one hidden continuation at normal settlement", async () => {
@@ -416,6 +482,639 @@ describe("subagent tool", () => {
 			]);
 		},
 	);
+
+	it("keeps native worker write and edit results without extra diagnostics", async () => {
+		const path = join(directory, "fixture.c");
+		const fixture = await setup([
+			fauxAssistantMessage(fauxToolCall("write", { path, content: "int before;\n" }), { stopReason: "toolUse" }),
+			(context) => {
+				expect(context.messages.findLast((message) => message.role === "toolResult")).toMatchObject({
+					toolName: "write",
+					isError: false,
+					content: [{ type: "text", text: `Successfully wrote to ${path}` }],
+				});
+				return fauxAssistantMessage(
+					fauxToolCall("edit", {
+						path,
+						edits: [{ oldText: "before", newText: "after" }],
+					}),
+					{ stopReason: "toolUse" },
+				);
+			},
+			(context) => {
+				expect(context.messages.findLast((message) => message.role === "toolResult")).toMatchObject({
+					toolName: "edit",
+					isError: false,
+					content: [
+						{
+							type: "text",
+							text: `Successfully replaced 1 block(s) in ${path}.`,
+						},
+					],
+				});
+				return fauxAssistantMessage("worker finished");
+			},
+		]);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "worker finished" },
+		]);
+		expect(readFileSync(path, "utf8")).toBe("int after;\n");
+	});
+
+	it("executes an approved CLI tool with inherited effective flags without importing changed source", async () => {
+		const path = join(directory, "cli-extension.mjs");
+		writeFileSync(
+			path,
+			`export default function(pi) {
+			pi.registerFlag("cli-fixture", { type: "string", default: "default" });
+			pi.registerTool({
+				name: "cli_fixture", label: "CLI fixture", description: "CLI fixture",
+				parameters: { type: "object", properties: {} },
+				async execute() { return { content: [{ type: "text", text: pi.getFlag("cli-fixture") }], details: {} }; }
+			});
+		}`,
+		);
+		const fixture = await setup(
+			[
+				fauxAssistantMessage(fauxToolCall("cli_fixture", {}), { stopReason: "toolUse" }),
+				(context) => {
+					expect(context.messages.findLast((message) => message.role === "toolResult")).toMatchObject({
+						toolName: "cli_fixture",
+						isError: false,
+						content: [{ type: "text", text: "effective CLI value" }],
+					});
+					return fauxAssistantMessage("CLI extension inherited");
+				},
+			],
+			[],
+			{ additionalExtensionPaths: [path] },
+		);
+		fixture.loader.getExtensions().runtime.flagValues.set("cli-fixture", "effective CLI value");
+		writeFileSync(path, 'throw new Error("fresh import forbidden")');
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "CLI extension inherited" },
+		]);
+	});
+
+	it("keeps parent tool exclusions when a worker startup hook tries to reactivate tools", async () => {
+		const fixture = await setup(
+			[
+				(context) => {
+					expect(
+						context.messages.find((message) => message.role === "system")?.toolsAdded?.map((tool) => tool.name),
+					).toEqual(["read"]);
+					return fauxAssistantMessage("exclusions retained");
+				},
+			],
+			[
+				(pi) => {
+					pi.on("session_start", () => {
+						pi.setActiveTools(["read", "write", "bash", "subagent"]);
+					});
+				},
+			],
+			{ excludeTools: ["write", "bash"] },
+		);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "exclusions retained" },
+		]);
+	});
+
+	it("runs child extension tools and exposes formatter diagnostics to the next model request", async () => {
+		const path = join(directory, "formatted.txt");
+		const fixture = await setup(
+			[
+				fauxAssistantMessage(fauxToolCall("write", { path, content: "before\n" }), { stopReason: "toolUse" }),
+				(context) => {
+					expect(context.messages.findLast((message) => message.role === "toolResult")).toMatchObject({
+						toolName: "write",
+						content: [
+							{
+								type: "text",
+								text: expect.stringContaining("formatter diagnostic"),
+							},
+						],
+					});
+					return fauxAssistantMessage(fauxToolCall("hashline_read", { path }), {
+						stopReason: "toolUse",
+					});
+				},
+				(context) => {
+					expect(JSON.stringify(context.messages.findLast((message) => message.role === "toolResult"))).toContain(
+						"formatted",
+					);
+					return fauxAssistantMessage("checked formatted result");
+				},
+			],
+			[
+				codeExtension,
+				(pi) => {
+					pi.on("tool_result", (event) => {
+						if (event.toolName !== "write") return;
+						writeFileSync(path, "formatted\n");
+						return {
+							content: [{ type: "text", text: "formatter diagnostic: formatted file" }],
+						};
+					});
+				},
+			],
+		);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "checked formatted result" },
+		]);
+		expect(readFileSync(path, "utf8")).toBe("formatted\n");
+	});
+
+	it("isolates extension state, settings, session entries, event buses and lifecycle", async () => {
+		const starts: string[] = [];
+		const stops: string[] = [];
+		const events: string[] = [];
+		const counts: number[] = [];
+		const fixture = await setup(
+			[
+				fauxAssistantMessage(fauxToolCall("counter", {}), {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("first child"),
+				fauxAssistantMessage(fauxToolCall("counter", {}), {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("second child"),
+			],
+			[
+				(pi) => {
+					let count = 0;
+					let id = "";
+					pi.events.on("child-test", () => {
+						events.push(id);
+					});
+					pi.on("session_start", (_event, ctx) => {
+						id = ctx.sessionManager.getSessionId();
+						starts.push(id);
+						pi.appendEntry("child-test", { id });
+					});
+					pi.on("session_shutdown", () => {
+						stops.push(id);
+					});
+					pi.registerTool({
+						name: "counter",
+						label: "counter",
+						description: "counter",
+						parameters: Type.Object({}),
+						async execute() {
+							pi.events.emit("child-test", {});
+							count++;
+							counts.push(count);
+							return {
+								content: [{ type: "text", text: String(count) }],
+								details: {},
+							};
+						},
+					});
+				},
+			],
+		);
+		for (let index = 1; index <= 2; index++) {
+			await fixture.execute({ tasks: [task("worker")] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(index));
+		}
+		expect(new Set(starts).size).toBe(3);
+		expect(stops).toEqual(starts.slice(1));
+		expect(events).toEqual(starts.slice(1));
+		expect(counts).toEqual([1, 1]);
+		expect(
+			fixture.session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "custom" && entry.customType === "child-test"),
+		).toHaveLength(1);
+	});
+
+	it.each(["scout", "reviewer"] as const)(
+		"keeps %s read-only after startup reactivation and denies nested/codemode calls",
+		async (role) => {
+			const path = join(directory, "must-not-exist");
+			const fixture = await setup(
+				[
+					(context) => {
+						const system = context.messages.find((message) => message.role === "system");
+						expect(system?.toolsAdded?.map((tool) => tool.name).sort()).toEqual(["find", "grep", "ls", "read"]);
+						return fauxAssistantMessage(fauxToolCall("write", { path, content: "denied" }), {
+							stopReason: "toolUse",
+						});
+					},
+					(context) => {
+						expect(context.messages.findLast((message) => message.role === "toolResult")).toMatchObject({
+							isError: true,
+						});
+						return fauxAssistantMessage("read only");
+					},
+				],
+				[
+					codemodeExtension,
+					(pi) => {
+						pi.on("session_start", async (_event, ctx) => {
+							pi.setActiveTools(["read", "grep", "find", "ls", "write", "bash", "edit", "subagent", "codemode"]);
+							if (!ctx.getSystemPrompt().includes("You are a subagent")) return;
+							await expect(ctx.createChildSession({ instructions: "recursive" })).rejects.toThrow(
+								"cannot create child",
+							);
+						});
+					},
+				],
+			);
+			const [job] = await fixture.execute({ tasks: [task(role)] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([{ status: "completed" }]);
+			expect(existsSync(path)).toBe(false);
+		},
+	);
+
+	it("denies delegation through a worker's nested tool API", async () => {
+		const fixture = await setup(
+			[
+				fauxAssistantMessage(fauxToolCall("nested", {}), {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("no delegation"),
+			],
+			[
+				(pi) => {
+					pi.registerTool({
+						name: "nested",
+						label: "nested",
+						description: "nested",
+						parameters: Type.Object({}),
+						async execute(_id, _args, _signal, _update, ctx) {
+							const result = await ctx.executeTool("subagent", {
+								tasks: [task()],
+							});
+							expect(result.isError).toBe(true);
+							await expect(ctx.createChildSession({ instructions: "recursive" })).rejects.toThrow(
+								"cannot create child",
+							);
+							return {
+								content: [{ type: "text", text: "denied" }],
+								details: {},
+							};
+						},
+					});
+				},
+			],
+		);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "no delegation" },
+		]);
+		expect(fixture.faux.state.callCount).toBe(2);
+	});
+
+	it.each(["scout", "reviewer"] as const)(
+		"denies nested write, codemode and MCP after %s tool reactivation",
+		async (role) => {
+			const outcomes: boolean[] = [];
+			const fixture = await setup(
+				[
+					fauxAssistantMessage(fauxToolCall("read", {}), {
+						stopReason: "toolUse",
+					}),
+					fauxAssistantMessage("nested calls denied"),
+				],
+				[
+					codemodeExtension,
+					(pi) => {
+						pi.on("session_start", () => {
+							pi.setActiveTools(["read", "write", "codemode", "mcp__fixture__write"]);
+						});
+						pi.registerTool({
+							name: "read",
+							label: "read",
+							description: "read fixture",
+							parameters: Type.Object({}),
+							async execute(_id, _args, _signal, _update, ctx) {
+								for (const name of ["write", "codemode", "mcp__fixture__write", "subagent"]) {
+									const result = await ctx.executeTool(name, {});
+									outcomes.push(result.isError);
+								}
+								return {
+									content: [{ type: "text", text: "checked" }],
+									details: {},
+								};
+							},
+						});
+						pi.registerTool({
+							name: "mcp__fixture__write",
+							label: "forbidden",
+							description: "forbidden",
+							parameters: Type.Object({}),
+							async execute() {
+								outcomes.push(false);
+								return { content: [], details: {} };
+							},
+						});
+					},
+				],
+			);
+			const [job] = await fixture.execute({ tasks: [task(role)] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([{ status: "completed" }]);
+			expect(outcomes).toEqual([true, true, true, true]);
+		},
+	);
+
+	it("keeps the parent's model, trust and credentials without replaying provider registrations", async () => {
+		let parentId = "";
+		const observed: boolean[] = [];
+		const fixture = await setup(
+			[fauxAssistantMessage("same runtime")],
+			[
+				(pi) => {
+					pi.registerProvider("unused-child-provider", {
+						baseUrl: "https://example.invalid",
+						apiKey: "unused",
+						api: "openai-completions",
+						models: [],
+					});
+					pi.on("session_start", async (_event, ctx) => {
+						if (!parentId) {
+							parentId = ctx.sessionManager.getSessionId();
+							return;
+						}
+						observed.push(ctx.isProjectTrusted());
+						observed.push(await pi.setModel({ ...ctx.model!, id: "forbidden-switch" }));
+						pi.unregisterProvider(ctx.model!.provider);
+					});
+				},
+			],
+		);
+		fixture.session.settingsManager.setProjectTrusted(false);
+		const runtime = getModelRuntime(fixture.registry);
+		const register = vi.spyOn(runtime, "registerProvider");
+		const unregister = vi.spyOn(runtime, "unregisterProvider");
+		const stream = vi.spyOn(runtime, "streamSimple");
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "same runtime" },
+		]);
+		expect(observed).toEqual([false, false]);
+		expect(register).not.toHaveBeenCalled();
+		expect(unregister).not.toHaveBeenCalled();
+		expect(stream.mock.calls[0][0]).toEqual(fixture.session.model);
+	});
+
+	it("blocks direct registry mutations from child hooks without changing the parent runtime", async () => {
+		let parent = "";
+		const fixture = await setup(
+			[fauxAssistantMessage("parent registry intact")],
+			[
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						if (!parent) {
+							parent = ctx.sessionManager.getSessionId();
+							return;
+						}
+						expect(() => ctx.modelRegistry.unregisterProvider(ctx.model!.provider)).toThrow(
+							"cannot change the model registry",
+						);
+						expect(() => ctx.modelRegistry.unregisterVirtualModel("router", "auto")).toThrow(
+							"cannot change the model registry",
+						);
+					});
+				},
+			],
+		);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "parent registry intact" },
+		]);
+		expect(fixture.registry.find(fixture.session.model!.provider, fixture.session.model!.id)).toBeDefined();
+	});
+
+	it("honors a child startup shutdown without sending a model request", async () => {
+		let loads = 0;
+		const shutdown = vi.fn();
+		const fixture = await setup(
+			[],
+			[
+				(pi) => {
+					const child = loads++ > 0;
+					pi.on("session_start", (_event, ctx) => {
+						if (child) ctx.shutdown();
+					});
+					pi.on("session_shutdown", shutdown);
+				},
+			],
+		);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "failed", output: expect.stringContaining("shut down during startup") },
+		]);
+		expect(fixture.faux.state.callCount).toBe(0);
+		expect(shutdown).toHaveBeenCalledTimes(1);
+	});
+
+	it("routes a shared virtual model through the child's extension context and clears its router on disposal", async () => {
+		let loads = 0;
+		let physical: NonNullable<ReturnType<ReturnType<typeof fauxProvider>["getModel"]>>;
+		const routes: Array<{ instance: number; sessionId: string }> = [];
+		const fixture = await setup(
+			[fauxAssistantMessage("child routed"), fauxAssistantMessage("parent routed")],
+			[
+				(pi) => {
+					const instance = loads++;
+					pi.registerVirtualModel({
+						provider: "fixture-router",
+						id: "auto",
+						name: "Auto",
+						route: (_request, ctx) => {
+							routes.push({ instance, sessionId: ctx.sessionManager.getSessionId() });
+							return { model: physical, thinkingLevel: "off" };
+						},
+					});
+				},
+			],
+		);
+		physical = fixture.faux.getModel();
+		const runtime = getModelRuntime(fixture.registry);
+		await runtime.refresh({ allowNetwork: false });
+		const model = runtime.getModel("fixture-router", "auto");
+		if (!model) throw new Error("virtual fixture not registered");
+		await fixture.session.setModel(model);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "child routed" },
+		]);
+		expect(routes).toHaveLength(1);
+		expect(routes[0].instance).toBe(1);
+		expect(routes[0].sessionId).not.toBe(fixture.session.sessionId);
+		await runtime.resolveModel(model, [], { sessionId: routes[0].sessionId, reason: "direct", thinkingLevel: "off" });
+		expect(routes[1]).toEqual({ instance: 0, sessionId: fixture.session.sessionId });
+		await fixture.session.prompt("parent work after child cleanup");
+		expect(routes[2]).toEqual({ instance: 0, sessionId: fixture.session.sessionId });
+	});
+
+	it("does not inherit an active parent goal or its continuation loop", async () => {
+		const fixture = await setup(
+			[
+				(context) => {
+					expect(JSON.stringify(context.messages)).not.toContain("parent continuous goal");
+					return fauxAssistantMessage("child finished once");
+				},
+			],
+			[workflowExtension],
+		);
+		fixture.session.sessionManager.appendCustomEntry("goal", {
+			task: "parent continuous goal",
+			active: true,
+		});
+		await fixture.runner.emit({
+			type: "session_tree",
+			oldLeafId: "old",
+			newLeafId: "new",
+		});
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{ status: "completed", output: "child finished once" },
+		]);
+		expect(fixture.faux.state.callCount).toBe(1);
+	});
+
+	it("shuts down a child stopped during asynchronous session startup without making a model request", async () => {
+		const blocked = blockedResponse();
+		let starting = false;
+		const shutdown = vi.fn();
+		const fixture = await setup(
+			[],
+			[
+				(pi) => {
+					pi.on("session_start", async (_event, ctx) => {
+						if (!ctx.getSystemPrompt().includes("You are a subagent")) return;
+						starting = true;
+						await blocked.ready;
+					});
+					pi.on("session_shutdown", shutdown);
+				},
+			],
+		);
+		const [job] = await fixture.execute({ tasks: [task()] });
+		await vi.waitFor(() => expect(starting).toBe(true));
+		const stop = fixture.execute({ action: "stop", id: job.id });
+		blocked.release();
+		expect(await stop).toMatchObject([{ status: "stopped" }]);
+		expect(shutdown).toHaveBeenCalledTimes(1);
+		expect(fixture.faux.state.callCount).toBe(0);
+		expect(fixture.sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("reports shutdown hook failures and still releases child provider resources", async () => {
+		const fixture = await setup(
+			[fauxAssistantMessage("done")],
+			[
+				(pi) => {
+					pi.on("session_shutdown", () => {
+						throw new Error("child shutdown failed");
+					});
+				},
+			],
+		);
+		const cleanup = vi.fn();
+		const unregister = registerSessionResourceCleanup(cleanup);
+		try {
+			const [job] = await fixture.execute({ tasks: [task()] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+				{
+					status: "failed",
+					output: expect.stringContaining("child shutdown failed"),
+				},
+			]);
+			expect(cleanup).toHaveBeenCalledTimes(1);
+		} finally {
+			unregister();
+		}
+	});
+
+	it("shuts down initialized factories if native child construction fails", async () => {
+		let loads = 0;
+		const shutdown = vi.fn();
+		const fixture = await setup(
+			[],
+			[
+				(pi) => {
+					const child = loads++ > 0;
+					pi.on("session_shutdown", shutdown);
+					pi.registerTool({
+						name: "broken-child",
+						label: "broken",
+						description: "broken",
+						parameters: Type.Object({}),
+						get promptSnippet() {
+							if (child) throw new Error("child construction failed");
+							return "fixture";
+						},
+						async execute() {
+							return { content: [], details: {} };
+						},
+					});
+				},
+			],
+		);
+		const cleanup = vi.fn();
+		const unregister = registerSessionResourceCleanup(cleanup);
+		try {
+			const [job] = await fixture.execute({ tasks: [task("worker")] });
+			await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+			expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+				{
+					status: "failed",
+					output: expect.stringContaining("child construction failed"),
+				},
+			]);
+			expect(shutdown).toHaveBeenCalledTimes(1);
+			expect(cleanup).toHaveBeenCalledTimes(1);
+		} finally {
+			unregister();
+		}
+	});
+
+	it("emits shutdown for initialized child extensions when another child factory fails", async () => {
+		let loads = 0;
+		const shutdown = vi.fn();
+		const fixture = await setup(
+			[],
+			[
+				(pi) => {
+					pi.on("session_shutdown", shutdown);
+				},
+				() => {
+					if (loads++ > 0) throw new Error("child startup failed");
+				},
+			],
+		);
+		const [job] = await fixture.execute({ tasks: [task("worker")] });
+		await vi.waitFor(() => expect(fixture.sendMessage).toHaveBeenCalledTimes(1));
+		expect(await fixture.execute({ action: "result", id: job.id })).toMatchObject([
+			{
+				status: "failed",
+				output: expect.stringContaining("child startup failed"),
+			},
+		]);
+		expect(shutdown).toHaveBeenCalledTimes(1);
+		expect(fixture.faux.state.callCount).toBe(0);
+	});
 
 	it("enforces four active jobs across calls and clears only finished jobs", async () => {
 		const blocked = Array.from({ length: 5 }, () => blockedResponse());

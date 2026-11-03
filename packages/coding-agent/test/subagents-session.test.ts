@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import type { FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
+import type { FauxResponseFactory, FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -17,6 +17,22 @@ const childTask = "investigate the isolated fixture";
 const childOutput = "child fixture finding: verified 7319";
 const parentOutput = "independent parent work completed";
 const waitOptions = { timeout: 3000, interval: 5 };
+
+function byTask(responses: Record<string, FauxResponseFactory>, fallback: FauxResponseStep): FauxResponseFactory {
+	return (context, options, state, model) => {
+		const user = context.messages.findLast((message) => message.role === "user");
+		const content = user?.content;
+		const task =
+			typeof content === "string"
+				? content
+				: (content
+						?.filter((part) => part.type === "text")
+						.map((part) => part.text)
+						.join("\n") ?? "");
+		const response = responses[task] ?? fallback;
+		return typeof response === "function" ? response(context, options, state, model) : response;
+	};
+}
 
 // blocked requests always finish on release, abort, or deadline.
 function blockedResponse(text: string) {
@@ -163,13 +179,17 @@ describe("background subagents with AgentSession", () => {
 			});
 			return fauxAssistantMessage("parent incorporated the child finding");
 		});
+		const concurrent = byTask(
+			{ [childTask]: child.response },
+			state === "busy" ? parent.response : fauxAssistantMessage(parentOutput),
+		);
 		faux.setResponses([
 			fauxAssistantMessage(
 				fauxToolCall("subagent", { tasks: [{ role: "scout", task: childTask }] }, { id: "start-child" }),
 				{ stopReason: "toolUse" },
 			),
-			child.response,
-			state === "busy" ? parent.response : fauxAssistantMessage(parentOutput),
+			concurrent,
+			concurrent,
 			followUp,
 		]);
 		const run = session.prompt("Delegate the fixture investigation and do independent parent work.");
@@ -290,6 +310,7 @@ describe("background subagents with AgentSession", () => {
 			});
 			return fauxAssistantMessage("ordinary work resumed");
 		});
+		const concurrent = byTask({ [childTask]: child.response }, parent.response);
 		faux.setResponses([
 			fauxAssistantMessage(
 				fauxToolCall("subagent", {
@@ -297,8 +318,8 @@ describe("background subagents with AgentSession", () => {
 				}),
 				{ stopReason: "toolUse" },
 			),
-			child.response,
-			parent.response,
+			concurrent,
+			concurrent,
 			ordinary,
 		]);
 		const run = session.prompt("Delegate and continue working.");
@@ -368,6 +389,10 @@ describe("background subagents with AgentSession", () => {
 			for (const child of children) child.release();
 		});
 		const delivery = vi.spyOn(session, "sendCustomMessage");
+		const concurrent = byTask(
+			{ [childTask]: children[0].response, "independent worker fixture": children[1].response },
+			fauxAssistantMessage(parentOutput),
+		);
 		faux.setResponses([
 			fauxAssistantMessage(
 				fauxToolCall("subagent", {
@@ -378,8 +403,9 @@ describe("background subagents with AgentSession", () => {
 				}),
 				{ stopReason: "toolUse" },
 			),
-			...children.map((child) => child.response),
-			fauxAssistantMessage(parentOutput),
+			concurrent,
+			concurrent,
+			concurrent,
 			fauxAssistantMessage(fauxToolCall("subagent", { action: "list" }), {
 				stopReason: "toolUse",
 			}),

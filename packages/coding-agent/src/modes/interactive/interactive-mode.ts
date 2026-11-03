@@ -2349,6 +2349,7 @@ export class InteractiveMode {
 					}
 				})();
 			},
+			createChildSession: (options) => this.session.createChildSession(options),
 			getSystemPrompt: () => this.session.systemPrompt,
 		});
 

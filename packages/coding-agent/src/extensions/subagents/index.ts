@@ -1,11 +1,7 @@
 // runs isolated agent contexts through the current model runtime.
 import { randomUUID } from "node:crypto";
-import { Agent } from "@earendil-works/pi-agent-core";
-import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionToolContext } from "../../core/extensions/types.ts";
-import { createCodingTools, createReadOnlyTools } from "../../core/tools/index.ts";
-import { LanguageServers } from "../code/lsp.ts";
 
 const ROLE_PROMPTS = {
 	scout: "Investigate the assigned task. Read relevant files and report concrete findings with paths. Do not edit files.",
@@ -189,52 +185,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 async function runTask(task: Task, ctx: ExtensionToolContext, signal?: AbortSignal): Promise<Result> {
 	if (!ctx.model) throw new Error("No model selected for subagent");
 	signal?.throwIfAborted();
-	const servers = new LanguageServers();
-	const sessionId = randomUUID();
-	const agent = new Agent({
-		initialState: {
-			model: ctx.model,
-			thinkingLevel: ctx.thinkingLevel ?? "off",
-			systemPrompt: `${ctx.getSystemPrompt()}\n\nYou are a subagent. ${ROLE_PROMPTS[task.role]} Do not delegate; return findings to the parent.`,
-			tools: task.role === "worker" ? createCodingTools(ctx.cwd) : createReadOnlyTools(ctx.cwd),
-		},
-		streamFn: (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options),
-		sessionId,
-		afterToolCall: async ({ toolCall, args, isError, result: toolResult }, toolSignal) => {
-			if (
-				isError ||
-				!["write", "edit"].includes(toolCall.name) ||
-				!args ||
-				typeof args !== "object" ||
-				!("path" in args) ||
-				typeof args.path !== "string" ||
-				!servers.supports(args.path)
-			)
-				return;
-			try {
-				const result = await servers.diagnostics(args.path, ctx.cwd, toolSignal);
-				return {
-					content: [
-						...toolResult.content,
-						{
-							type: "text",
-							text: `Language-server diagnostics: ${result.confirmed ? JSON.stringify(result.diagnostics) : "not confirmed"}`,
-						},
-					],
-				};
-			} catch {
-				return {
-					content: [...toolResult.content, { type: "text", text: "Language-server diagnostics unavailable" }],
-				};
-			}
-		},
+	const child = await ctx.createChildSession({
+		instructions: `You are a subagent. ${ROLE_PROMPTS[task.role]} Do not delegate; return findings to the parent.`,
+		readOnly: task.role !== "worker",
 	});
-	const abort = () => agent.abort();
+	const abort = () => {
+		void child.abort();
+	};
 	signal?.addEventListener("abort", abort, { once: true });
 	try {
 		if (signal?.aborted) throw signal.reason;
-		await agent.prompt(task.task);
-		const message = agent.state.messages.findLast((item) => item.role === "assistant");
+		await child.prompt(task.task);
+		const message = child.messages.findLast((item) => item.role === "assistant");
 		if (!message || message.role !== "assistant")
 			return { role: task.role, status: "failed", output: "No assistant response" };
 		const output = message.content
@@ -248,10 +210,6 @@ async function runTask(task: Task, ctx: ExtensionToolContext, signal?: AbortSign
 		};
 	} finally {
 		signal?.removeEventListener("abort", abort);
-		try {
-			cleanupSessionResources(sessionId);
-		} finally {
-			await servers.close();
-		}
+		await child.dispose();
 	}
 }
