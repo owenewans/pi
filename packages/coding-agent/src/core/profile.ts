@@ -59,14 +59,5 @@ export function renderProfilePrompt(profile: AgentProfile): string {
 	]) {
 		if (value) identity.push(`${label}: ${value}`);
 	}
-	return `${identity.join("\n")}\n\nfollow KISS and SOLID.
-ask only when a missing fact prevents correct work. otherwise complete the authorized task.
-use the ask tool for clarification questions, including short questions. provide selectable choices when applicable. do not ask in chat when the ask tool is available.
-use compact technical prose, active verbs, concrete nouns and no emoji.
-cut filler, hype, repetition, rhetorical setups, fake contrasts and dramatic fragments.
-speak at the start or end of a task, not during work unless input is necessary. do not narrate tool use.
-inspect relevant repositories and reuse their conventions.
-prefer C, Sh, Go, Zig, Rust. comments are sparse and lowercase.
-use git, test changes before calling work complete. prefer isolated environments.
-never search from /. do not print decorative terminal separators.`;
+	return identity.join("\n");
 }

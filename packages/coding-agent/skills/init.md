@@ -1,15 +1,8 @@
 ---
 name: init
-description: Initialize a project, choose its license and create a GitHub or Codeberg repository.
+description: Initialize a project and create its GitHub or Codeberg repository.
 ---
 
-Inspect the directory first. Preserve existing code and metadata.
-Ask together for missing decisions: license, GitHub or Codeberg, repository name and visibility. For a private repository, ask whom to invite; an empty list is valid.
+Inspect the directory. Ask for missing choices: license, hosting, repository name and visibility. Suggest Unlicense; keep inherited licenses. Name the license file `license` unless the project uses another convention.
 
-Never choose a license without asking unless the user explicitly delegates that decision. Suggest Unlicense by default. Explain GPL when the user wants derivatives to stay open; do not prefer MIT or BSD automatically. Keep inherited licenses and notices intact. Name the license file `license` unless the project requires another path.
-
-Write `.gitignore` for the actual language and build outputs, without comments or unrelated templates. Create only the requested files. For a README, load `readme.md` from this skill's directory and follow its project-specific layout. State purpose, working commands and actual limitations; omit filler and unimplemented features.
-
-Test the starting project. When an initial commit is authorized, include the license, README, ignore rules and relevant starting code; use `first commit`.
-
-Create the remote with the chosen visibility, a short factual English description and three relevant topics. Use `gh` for GitHub and the available Codeberg client or API for Codeberg. Apply requested invitations. Verify the URL and visibility. Never claim publication succeeded without checking the remote.
+Add a suitable `.gitignore` and use `readme.md` for the README. Create the remote through `gh` or the Codeberg client, with a short English description, three relevant topics and any requested invitations.

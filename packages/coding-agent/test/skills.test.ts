@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
@@ -36,6 +38,16 @@ describe("skills", () => {
 		expect(skill?.filePath).toBe(join(getBundledSkillsPath(), "readme.md"));
 		expect(diagnostics).toEqual([]);
 		expect(formatSkillsForPrompt(skills)).toContain("<name>readme</name>");
+	});
+
+	it("ships the original humanizer with its MIT notice", () => {
+		const directory = getBundledSkillsPath();
+		const skill = readFileSync(join(directory, "humanizer.md"));
+		// blader/humanizer revision 0ef9fe5bc3572734fd3ae6c448fe00a30cd5dcf0.
+		expect(createHash("sha256").update(skill).digest("hex")).toBe(
+			"0612f1dfb1672b0ea9b97e139bf1f06cabe98d8b27424fe8ff01e1fb4cc99cad",
+		);
+		expect(readFileSync(join(directory, "humanizer-license"), "utf8")).toContain("Copyright (c) 2025 Siqi Chen");
 	});
 
 	describe("loadSkillsFromDir", () => {

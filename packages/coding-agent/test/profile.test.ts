@@ -40,7 +40,7 @@ describe("agent profile", () => {
 		expect(() => readProfile(path)).toThrow(/^Agent profile contains invalid JSON$/);
 	});
 
-	it("renders only configured identity fields and the requested rules", () => {
+	it("renders only configured identity fields without duplicating skill instructions", () => {
 		const prompt = renderProfilePrompt({
 			name: "fixture",
 			website: "example.org",
@@ -48,17 +48,15 @@ describe("agent profile", () => {
 			github: "github.com/example",
 			codeberg: "codeberg.org/example",
 		});
-		expect(prompt).toContain("you are the AI agent of fixture.");
-		expect(prompt).toContain("website: example.org");
-		expect(prompt).toContain("codeberg: codeberg.org/example");
-		expect(prompt).toContain("follow KISS and SOLID.");
-		expect(prompt).toContain("ask only when a missing fact prevents correct work.");
-		expect(prompt).toContain("use the ask tool for clarification questions, including short questions.");
-		expect(prompt).toContain("provide selectable choices when applicable.");
-		expect(prompt).toContain("do not ask in chat when the ask tool is available.");
-		expect(prompt).toContain("never search from /.");
-		const minimal = renderProfilePrompt({ name: "fixture" });
-		expect(minimal).not.toContain("undefined");
-		expect(minimal).not.toContain("website:");
+		expect(prompt).toBe(
+			[
+				"you are the AI agent of fixture.",
+				"website: example.org",
+				"email: user@example.org",
+				"github: github.com/example",
+				"codeberg: codeberg.org/example",
+			].join("\n"),
+		);
+		expect(renderProfilePrompt({ name: "fixture" })).toBe("you are the AI agent of fixture.");
 	});
 });
