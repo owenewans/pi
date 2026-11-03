@@ -43,7 +43,7 @@
       {
         "path": "src/extension.ts",
         "before": "a1e4d45674dfbe4504a671df17f501c57f58afdf0b803d9caa27f25940f78f0a",
-        "after": "59a46e29cbfb9f94f1886b6e62237f234f7b3aaaf4fd621299645f207b5295a2"
+        "after": "3ebdab2ac2e25f555b85cc5c1af18ebcc3eae19c5d5bb7a87fd83de5185bd57f"
       },
       {
         "path": "src/prompt-autoformatter.ts",
@@ -53,7 +53,7 @@
       {
         "path": "src/shell-mutation-detector.ts",
         "before": "8d9807e9dbf741dfcb5096c04bd40571c4f557df5a537fcee9c4b60d3572ecbb",
-        "after": "1524bf0405f1844403805c73a8a5c17e0b25c3dedf83962857434371135200f3"
+        "after": "861b182d23bb1c24a27f4a9b340962ac04c06b71d818f00eac2cfde6042108d7"
       }
     ]
   },

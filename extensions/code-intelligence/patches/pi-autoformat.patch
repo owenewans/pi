@@ -2,7 +2,8 @@
 +++ b/node_modules/@gotgenes/pi-autoformat/src/extension.ts
 @@ -1,5 +1,6 @@
  import { execFile } from "node:child_process";
- import { promisify } from "node:util";
+-import { promisify } from "node:util";
++import { promisify, stripVTControlCharacters } from "node:util";
 +import { readFile } from "node:fs/promises";
  
  import {
@@ -15,7 +16,39 @@
    unsubscribeEventBus: (() => void) | undefined;
  };
  
-@@ -586,6 +588,7 @@
+@@ -275,11 +277,8 @@
+   type: NotificationType,
+ ): void {
+   if (ctx.hasUI) {
+-    ctx.ui.notify(message, type);
+-    return;
+-  }
+-
+-  console.warn(`[${AUTOFORMAT_EXTENSION_ID}] ${message}`);
++    ctx.ui.notify(stripVTControlCharacters(message).replace(/\r\n?/g, "\n"), type);
++  }
+ }
+ 
+ type FailureSummary = {
+@@ -488,15 +487,12 @@
+     }
+   }
+ 
+-  return parts.join("\n\n") || undefined;
++  return stripVTControlCharacters(parts.join("\n\n")).replace(/\r\n?/g, "\n") || undefined;
+ }
+ 
+ function buildLegacyFailureMessage(summary: FlushSummary): string {
+   const batchWord = summary.failureBatchCount === 1 ? "batch" : "batches";
+-  return [
+-    `Formatter failures in ${summary.failureBatchCount} ${batchWord}:`,
+-    ...summary.failureLines,
+-  ].join("\n");
++  return `Formatter failures in ${summary.failureBatchCount} ${batchWord}.`;
+ }
+ 
+ function defaultReportFlushResult(
+@@ -586,6 +582,7 @@
      dependencies.reportConfigIssues ?? defaultReportConfigIssues;
  
    let state: SessionState | undefined;
@@ -23,7 +56,7 @@
    let pendingFlush = Promise.resolve<PromptAutoformatterResult | undefined>(
      undefined,
    );
-@@ -597,11 +600,13 @@
+@@ -597,11 +594,13 @@
  
      const loadResult = loadConfig(cwd);
      const detection = loadResult.config.shellMutationDetection;
@@ -37,7 +70,7 @@
            })
          : undefined;
      const autoformatter = createAutoformatter(cwd, loadResult.config);
-@@ -615,6 +620,7 @@
+@@ -615,6 +614,7 @@
        loadResult,
        autoformatter,
        snapshotTracker,
@@ -45,7 +78,7 @@
        unsubscribeEventBus,
      };
      return state;
-@@ -629,6 +635,7 @@
+@@ -629,6 +629,7 @@
      }
  
      pendingFlush = pendingFlush
@@ -53,7 +86,7 @@
        .then(async () => {
          const result = await sessionState.autoformatter.flushPrompt();
          reportFlushResult(result, {
-@@ -640,7 +647,7 @@
+@@ -640,7 +641,7 @@
        .catch((error: unknown) => {
          const message = error instanceof Error ? error.message : String(error);
          reportMessage(ctx, `Unexpected runtime error: ${message}`, "warning");
@@ -62,7 +95,12 @@
        });
  
      return pendingFlush;
-@@ -656,16 +663,24 @@
+@@ -652,20 +653,28 @@
+     setAutoformatStatus(ctx, undefined);
+   });
+ 
+-  pi.on("tool_call", (event: ToolCallEvent, ctx) => {
++  pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
      if (event.toolName !== "bash") {
        return;
      }
@@ -71,8 +109,9 @@
 +      return;
 +    }
      const sessionState = ensureState(ctx.cwd);
+-    sessionState.snapshotTracker?.before();
 +    sessionState.snapshotWarnings.length = 0;
-     sessionState.snapshotTracker?.before();
++    await sessionState.snapshotTracker?.before();
    });
  
 -  pi.on("tool_result", (event: ToolResultEvent, ctx) => {
@@ -92,7 +131,12 @@
      const output = extractToolOutputText(event.content);
      sessionState.autoformatter.recordToolResult(
        event.toolName,
-@@ -678,6 +693,33 @@
+@@ -674,10 +683,37 @@
+     );
+ 
+     if (event.toolName === "bash" && sessionState.snapshotTracker) {
+-      const snapshotTouched = sessionState.snapshotTracker.after();
++      const snapshotTouched = await sessionState.snapshotTracker.after();
        for (const touched of snapshotTouched) {
          sessionState.autoformatter.addTouchedPath(touched);
        }
@@ -153,86 +197,460 @@
  
 --- a/node_modules/@gotgenes/pi-autoformat/src/shell-mutation-detector.ts
 +++ b/node_modules/@gotgenes/pi-autoformat/src/shell-mutation-detector.ts
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
 -import { statSync } from "node:fs";
-+import { globSync, readFileSync, statSync } from "node:fs";
-+import { createHash } from "node:crypto";
++import { spawn } from "node:child_process";
++import { webcrypto } from "node:crypto";
++import { lstat, open, opendir } from "node:fs/promises";
  import path from "node:path";
  
  export type WrapperOutputFormat = "lines";
-@@ -444,7 +445,7 @@
-   /** Resolve globs to absolute file paths. Injected for tests. */
-   resolveGlobs?: (cwd: string, globs: string[]) => string[];
-   /** stat function — injected for tests. */
+@@ -438,134 +440,329 @@
+ // Strategy 2: pre/post snapshot of explicit globs
+ // ---------------------------------------------------------------------------
+ 
++type SnapshotStat = { mtimeMs: number; fingerprint?: string };
++type MaybePromise<T> = T | Promise<T>;
++
+ export type SnapshotTrackerOptions = {
+   cwd: string;
+   globs: string[];
+-  /** Resolve globs to absolute file paths. Injected for tests. */
+-  resolveGlobs?: (cwd: string, globs: string[]) => string[];
+-  /** stat function — injected for tests. */
 -  stat?: (absPath: string) => { mtimeMs: number } | undefined;
-+  stat?: (absPath: string) => { mtimeMs: number; fingerprint?: string } | undefined;
-   /** Maximum entries to track before warning + truncating. */
+-  /** Maximum entries to track before warning + truncating. */
++  /** injected resolvers may be synchronous or asynchronous. */
++  resolveGlobs?: (cwd: string, globs: string[]) => MaybePromise<string[]>;
++  stat?: (absPath: string) => MaybePromise<SnapshotStat | undefined>;
    maxEntries?: number;
-   /** Receives a single message string when the cap is exceeded. */
-@@ -453,23 +454,23 @@
+-  /** Receives a single message string when the cap is exceeded. */
++  maxCandidates?: number;
++  maxEnumerationBytes?: number;
++  maxFileBytes?: number;
++  maxHashBytes?: number;
++  timeoutMs?: number;
+   onWarn?: (message: string) => void;
+ };
  
- const DEFAULT_MAX_ENTRIES = 5000;
- 
+-const DEFAULT_MAX_ENTRIES = 5000;
+-
 -function defaultStat(absPath: string): { mtimeMs: number } | undefined {
-+function defaultStat(absPath: string): { mtimeMs: number; fingerprint?: string } | undefined {
-   try {
-     const s = statSync(absPath);
-     if (!s.isFile()) {
-       return undefined;
-     }
+-  try {
+-    const s = statSync(absPath);
+-    if (!s.isFile()) {
+-      return undefined;
+-    }
 -    return { mtimeMs: s.mtimeMs };
-+    const hash = createHash("sha256").update(readFileSync(absPath)).digest("hex");
-+    return { mtimeMs: s.mtimeMs, fingerprint: hash };
-   } catch {
-     return undefined;
-   }
- }
- 
+-  } catch {
+-    return undefined;
+-  }
+-}
+-
 -function defaultResolveGlobs(_cwd: string, _globs: string[]): string[] {
 -  // Real glob resolution lives at the wiring layer (and may be deferred until
 -  // we add a glob library). The default is a no-op so the tracker is testable
 -  // in isolation via the injectable resolver.
 -  return [];
-+function defaultResolveGlobs(cwd: string, globs: string[]): string[] {
-+  return globSync(globs, {
-+    cwd, exclude: ["**/node_modules/**", "**/.git/**", "**/target/**", "**/dist/**", "**/.venv/**", "**/vendor/**", "**/.cache/**"],
-+  }).map((file) => path.resolve(cwd, file)).sort();
- }
- 
- /**
-@@ -489,7 +490,7 @@
-       onWarn: (message: string) => void;
-     };
- 
+-}
+-
+-/**
+- * Pre/post mtime snapshot tracker for explicit globs.
+- *
+- * `before()` records mtimes for all matched files. `after()` re-stats and
+- * returns the absolute paths whose mtime advanced. Files that did not exist
+- * before but exist after are also reported.
+- */
++const SNAPSHOT_LIMITS = {
++  maxEntries: 5000,
++  maxCandidates: 20000,
++  maxEnumerationBytes: 4 * 1024 * 1024,
++  maxFileBytes: 1024 * 1024,
++  maxHashBytes: 16 * 1024 * 1024,
++  timeoutMs: 2000,
++};
++
++const EXCLUDED_DIRECTORIES = new Set([
++  "node_modules",
++  ".git",
++  "target",
++  "dist",
++  ".venv",
++  "vendor",
++  ".cache",
++]);
++const FALLBACK_EXCLUDED_DIRECTORIES = new Set([
++  ...EXCLUDED_DIRECTORIES,
++  "cache",
++  "build",
++  "pkg",
++]);
++
++type Snapshot = { entries: Map<string, string | number>; complete: boolean };
++type SnapshotLimits = typeof SNAPSHOT_LIMITS;
++
++async function resolveSnapshotFiles(
++  cwd: string,
++  globs: string[],
++  limits: SnapshotLimits,
++  signal: AbortSignal,
++  warn: (reason: string) => void,
++): Promise<string[]> {
++  const files: string[] = [];
++  let candidates = 0;
++  let bytes = 0;
++  const accept = (file: string, isFile = true): boolean => {
++    if (++candidates > limits.maxCandidates) {
++      warn(`enumeration exceeded ${limits.maxCandidates} candidates`);
++      return false;
++    }
++    bytes += Buffer.byteLength(file) + 1;
++    if (bytes > limits.maxEnumerationBytes) {
++      warn(`enumeration exceeded ${limits.maxEnumerationBytes} bytes`);
++      return false;
++    }
++    if (file.split(/[\\/]/).some((part) => EXCLUDED_DIRECTORIES.has(part)))
++      return true;
++    if (
++      isFile &&
++      globs.some((glob) =>
++        path.matchesGlob(
++          path.isAbsolute(glob) ? path.resolve(cwd, file) : file,
++          glob.replace(/^\.\//, ""),
++        ),
++      )
++    ) {
++      if (files.length >= limits.maxEntries) {
++        warn(
++          `snapshotGlobs matched more than ${limits.maxEntries} files; tracking truncated`,
++        );
++        return false;
++      }
++      files.push(path.resolve(cwd, file));
++    }
++    return true;
++  };
++
++  const inGit = await new Promise<boolean>((resolve, reject) => {
++    if (signal.aborted) return resolve(true);
++    const child = spawn(
++      "git",
++      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
++      {
++        cwd,
++        stdio: ["ignore", "pipe", "pipe"],
++      },
++    );
++    let pending = Buffer.alloc(0);
++    let outputBytes = 0;
++    let stderr = "";
++    let stopped = false;
++    const stop = () => {
++      stopped = true;
++      child.kill("SIGKILL");
++    };
++    signal.addEventListener("abort", stop, { once: true });
++    child.stdout.on("data", (chunk: Buffer) => {
++      if (stopped) return;
++      outputBytes += chunk.length;
++      if (outputBytes > limits.maxEnumerationBytes) {
++        warn(`enumeration exceeded ${limits.maxEnumerationBytes} bytes`);
++        stop();
++        return;
++      }
++      pending = Buffer.concat([pending, chunk]);
++      let end: number;
++      let start = 0;
++      while ((end = pending.indexOf(0, start)) !== -1) {
++        if (!accept(pending.toString("utf8", start, end))) {
++          stop();
++          break;
++        }
++        start = end + 1;
++      }
++      pending = pending.subarray(start);
++    });
++    child.stderr.on("data", (chunk: Buffer) => {
++      if (stderr.length < 4096)
++        stderr += chunk.toString("utf8").slice(0, 4096 - stderr.length);
++    });
++    child.on("error", (error: NodeJS.ErrnoException) => {
++      signal.removeEventListener("abort", stop);
++      if (error.code === "ENOENT") {
++        warn("Git unavailable; fallback cannot apply Git ignore rules");
++        resolve(false);
++      } else reject(error);
++    });
++    child.on("close", (code) => {
++      signal.removeEventListener("abort", stop);
++      if (stopped || code === 0) resolve(true);
++      else if (stderr.includes("not a git repository")) resolve(false);
++      else reject(new Error(`git ls-files failed: ${stderr.trim() || code}`));
++    });
++  });
++
++  if (!inGit && !signal.aborted) {
++    const walk = async (directory: string): Promise<boolean> => {
++      const dir = await opendir(path.resolve(cwd, directory));
++      for await (const entry of dir) {
++        if (signal.aborted) return false;
++        const file = path.join(directory, entry.name);
++        if (!accept(file, entry.isFile())) return false;
++        if (
++          entry.isDirectory() &&
++          !FALLBACK_EXCLUDED_DIRECTORIES.has(entry.name)
++        ) {
++          if (!(await walk(file))) return false;
++        }
++      }
++      return true;
++    };
++    await walk("");
++  }
++  return files;
++}
++
++/** bounded pre/post content snapshots; incomplete baselines never imply new files. */
+ export class SnapshotTracker {
+-  private readonly options: Required<
+-    Pick<SnapshotTrackerOptions, "cwd" | "globs">
+-  > &
+-    Required<
+-      Pick<SnapshotTrackerOptions, "resolveGlobs" | "stat" | "maxEntries">
+-    > & {
+-      onWarn: (message: string) => void;
+-    };
+-
 -  private snapshot: Map<string, number> | undefined;
-+  private snapshot: Map<string, string | number> | undefined;
++  private readonly options: SnapshotTrackerOptions;
++  private readonly limits: SnapshotLimits;
++  private snapshot: Snapshot | undefined;
  
    constructor(options: SnapshotTrackerOptions) {
-     this.options = {
-@@ -511,7 +512,7 @@
-       this.options.cwd,
-       this.options.globs,
-     );
+-    this.options = {
+-      cwd: options.cwd,
+-      globs: options.globs,
+-      resolveGlobs: options.resolveGlobs ?? defaultResolveGlobs,
+-      stat: options.stat ?? defaultStat,
+-      maxEntries: options.maxEntries ?? DEFAULT_MAX_ENTRIES,
+-      onWarn: options.onWarn ?? (() => {}),
+-    };
+-  }
+-
+-  before(): void {
+-    if (this.options.globs.length === 0) {
+-      this.snapshot = new Map();
+-      return;
+-    }
+-    const files = this.options.resolveGlobs(
+-      this.options.cwd,
+-      this.options.globs,
+-    );
 -    const snapshot = new Map<string, number>();
-+    const snapshot = new Map<string, string | number>();
-     let truncated = false;
-     for (const file of files) {
-       if (snapshot.size >= this.options.maxEntries) {
-@@ -523,7 +524,7 @@
-         : path.resolve(this.options.cwd, file);
-       const s = this.options.stat(abs);
-       if (s) {
+-    let truncated = false;
+-    for (const file of files) {
+-      if (snapshot.size >= this.options.maxEntries) {
+-        truncated = true;
+-        break;
+-      }
+-      const abs = path.isAbsolute(file)
+-        ? file
+-        : path.resolve(this.options.cwd, file);
+-      const s = this.options.stat(abs);
+-      if (s) {
 -        snapshot.set(abs, s.mtimeMs);
-+        snapshot.set(abs, s.fingerprint ?? s.mtimeMs);
-       }
-     }
-     if (truncated) {
-@@ -562,7 +563,7 @@
-         continue;
-       }
-       const prior = before.get(abs);
+-      }
+-    }
+-    if (truncated) {
+-      this.options.onWarn(
+-        `pi-autoformat: snapshotGlobs matched more than ${this.options.maxEntries} files; tracking truncated.`,
+-      );
+-    }
+-    this.snapshot = snapshot;
+-  }
+-
+-  after(): string[] {
++    this.options = options;
++    this.limits = { ...SNAPSHOT_LIMITS };
++    for (const key of Object.keys(SNAPSHOT_LIMITS) as Array<
++      keyof SnapshotLimits
++    >) {
++      const value = options[key];
++      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
++        throw new Error(
++          `pi-autoformat: ${key} must be a positive safe integer`,
++        );
++      }
++      if (value !== undefined) this.limits[key] = value;
++    }
++  }
++
++  async before(): Promise<void> {
++    this.snapshot = undefined;
++    this.snapshot = await this.capture();
++  }
++
++  async after(): Promise<string[]> {
+     const before = this.snapshot;
+     this.snapshot = undefined;
+-    if (!before) {
+-      return [];
+-    }
+-    if (this.options.globs.length === 0) {
+-      return [];
+-    }
+-    const files = this.options.resolveGlobs(
+-      this.options.cwd,
+-      this.options.globs,
+-    );
+-    const touched: string[] = [];
+-    let count = 0;
+-    for (const file of files) {
+-      if (count >= this.options.maxEntries) {
+-        break;
+-      }
+-      count += 1;
+-      const abs = path.isAbsolute(file)
+-        ? file
+-        : path.resolve(this.options.cwd, file);
+-      const s = this.options.stat(abs);
+-      if (!s) {
+-        continue;
+-      }
+-      const prior = before.get(abs);
 -      if (prior === undefined || s.mtimeMs > prior) {
-+      if (prior === undefined || (s.fingerprint ?? s.mtimeMs) !== prior) {
-         touched.push(abs);
-       }
-     }
+-        touched.push(abs);
+-      }
+-    }
+-    return touched;
+-  }
+-}
++    if (!before) return [];
++    const after = await this.capture();
++    return [...after.entries]
++      .filter(([file, fingerprint]) =>
++        before.entries.has(file)
++          ? before.entries.get(file) !== fingerprint
++          : before.complete,
++      )
++      .map(([file]) => file);
++  }
++
++  private async capture(): Promise<Snapshot> {
++    const snapshot: Snapshot = { entries: new Map(), complete: true };
++    if (this.options.globs.length === 0) return snapshot;
++    const reasons = new Set<string>();
++    const warn = (reason: string) => {
++      snapshot.complete = false;
++      reasons.add(reason);
++    };
++    const controller = new AbortController();
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    const timeout = new Promise<void>((resolve) => {
++      timer = setTimeout(() => {
++        warn(`duration exceeded ${this.limits.timeoutMs}ms`);
++        controller.abort();
++        resolve();
++      }, this.limits.timeoutMs);
++    });
++    const scan = async () => {
++      const resolved = this.options.resolveGlobs
++        ? await this.options.resolveGlobs(this.options.cwd, this.options.globs)
++        : await resolveSnapshotFiles(
++            this.options.cwd,
++            this.options.globs,
++            this.limits,
++            controller.signal,
++            warn,
++          );
++      if (controller.signal.aborted) return;
++      if (resolved.length > this.limits.maxCandidates)
++        warn(`enumeration exceeded ${this.limits.maxCandidates} candidates`);
++      const files = [
++        ...new Set(
++          resolved
++            .slice(0, this.limits.maxCandidates)
++            .map((file) => path.resolve(this.options.cwd, file)),
++        ),
++      ].sort();
++      if (files.length > this.limits.maxEntries)
++        warn(
++          `snapshotGlobs matched more than ${this.limits.maxEntries} files; tracking truncated`,
++        );
++      let hashedBytes = 0;
++      for (const file of files.slice(0, this.limits.maxEntries)) {
++        if (controller.signal.aborted) return;
++        let s: SnapshotStat | undefined;
++        try {
++          if (this.options.stat) {
++            s = await this.options.stat(file);
++          } else {
++            const info = await lstat(file);
++            if (!info.isFile()) continue;
++            if (info.size > this.limits.maxFileBytes) {
++              warn(
++                `files larger than ${this.limits.maxFileBytes} bytes skipped`,
++              );
++              continue;
++            }
++            if (hashedBytes + info.size > this.limits.maxHashBytes) {
++              warn(`hashing exceeded ${this.limits.maxHashBytes} bytes`);
++              break;
++            }
++            const handle = await open(file, "r");
++            try {
++              const buffer = Buffer.alloc(info.size + 1);
++              let length = 0;
++              while (length < buffer.length && !controller.signal.aborted) {
++                const { bytesRead } = await handle.read(
++                  buffer,
++                  length,
++                  buffer.length - length,
++                  null,
++                );
++                if (bytesRead === 0) break;
++                length += bytesRead;
++              }
++              hashedBytes += length;
++              if (length > info.size) {
++                warn("files grew during hashing; skipped");
++                continue;
++              }
++              if (controller.signal.aborted) return;
++              const hash = await webcrypto.subtle.digest(
++                "SHA-256",
++                buffer.subarray(0, length),
++              );
++              s = {
++                mtimeMs: info.mtimeMs,
++                fingerprint: Buffer.from(hash).toString("hex"),
++              };
++            } finally {
++              await handle.close();
++            }
++          }
++          if (controller.signal.aborted) return;
++          if (s) snapshot.entries.set(file, s.fingerprint ?? s.mtimeMs);
++          else warn("some files could not be fingerprinted");
++        } catch {
++          if (!controller.signal.aborted)
++            warn("some files could not be fingerprinted");
++        }
++      }
++    };
++    try {
++      await Promise.race([scan(), timeout]);
++    } catch (error) {
++      warn(error instanceof Error ? error.message : String(error));
++    } finally {
++      clearTimeout(timer);
++      controller.abort();
++    }
++    if (!snapshot.complete) {
++      this.options.onWarn?.(
++        `pi-autoformat: snapshot coverage incomplete: ${[...reasons].join("; ")}. Only verified changes are reported; some changes may be missed.`,
++      );
++    }
++    return snapshot;
++  }
++}

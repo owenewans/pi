@@ -78,6 +78,7 @@ export async function formatFile(inputPath, { biomeConfig, runner = run } = {}) 
 	const cwd = dirname(path),
 		ext = extname(path).toLowerCase();
 	let command, args;
+	let formatterCwd = cwd;
 	if ([".go", ".rs", ".c", ".h", ".cc", ".cpp", ".hpp", ".sh", ".zig"].includes(ext)) {
 		const tool =
 			ext === ".go"
@@ -107,15 +108,17 @@ export async function formatFile(inputPath, { biomeConfig, runner = run } = {}) 
 		const config = biomeConfig ?? (await nearest(path, ["biome.json", "biome.jsonc", "scripts/biome.config.json"]));
 		command = config ? await executable("biome", cwd) : undefined;
 		if (config && !command) throw new Error(`formatter unavailable: biome (${config})`);
-		if (command) args = ["format", "--stdin-file-path", path, "--config-path", config];
-		else {
+		if (command) {
+			formatterCwd = config.endsWith("/scripts/biome.config.json") ? dirname(dirname(config)) : dirname(config);
+			args = ["format", "--stdin-file-path", path, "--config-path", config];
+		} else {
 			command = process.execPath;
 			const prettier =
 				(await executable("prettier", cwd)) ?? join(packageRoot, "node_modules/prettier/bin/prettier.cjs");
 			args = [prettier, "--stdin-filepath", path];
 		}
 	} else throw new Error(`formatter not configured for ${path}`);
-	const result = await runner(command, args, { cwd, input: original });
+	const result = await runner(command, args, { cwd: formatterCwd, input: original });
 	if (result.code !== 0) throw new Error(result.stderr || result.stdout || `formatter exited ${result.code}`);
 	const formatted = Buffer.from(result.stdout);
 	if (formatted.length === 0 && original.toString("utf8").trim())
