@@ -1,9 +1,9 @@
 ---
 name: readme
-description: Write a README matching owenewans's supplied project examples.
+description: Write readme.md matching owenewans's supplied project examples.
 ---
 
-Match the author's project READMEs, such as owenclave, owensurf and snolc, rather than inherited upstream documentation. Use English, lowercase section headings and this header:
+Use the filename `readme.md`. Match the author's own root readmes, such as owenclave, owensurf and snolc; inherited upstream and nested dependency readmes are not style references. Use English, lowercase section headings and this header:
 
 ```markdown
 <div align="center">
@@ -19,4 +19,6 @@ short factual description.
 </div>
 ```
 
-Use the real repository identity. Follow with the sections the project needs, concise paragraphs, runnable commands and tables where useful. Keep reference material in the existing documentation or man pages; follow `documentation.md` and `stop-slop.md`.
+Use the real repository identity. Keep capabilities together in `features` and build/install steps together in `install`. Keep `usage` about running the program; put feature-specific instructions and setup details in linked documentation. Include only sections the project needs.
+
+Omit separate fork/version paragraphs, development/test sections and generic copyright or attribution summaries unless requested. A license link is enough. Keep reference material in existing documentation or man pages; follow `documentation.md` and `stop-slop.md`.

@@ -34,7 +34,7 @@ describe("skills", () => {
 		const { skills, diagnostics } = loadSkillsFromDir({ dir: getBundledSkillsPath(), source: "builtin" });
 		const skill = skills.find((item) => item.name === "readme");
 		expect(skill).toMatchObject({ disableModelInvocation: false });
-		expect(skill?.description).toContain("README");
+		expect(skill?.description).toContain("readme.md");
 		expect(skill?.filePath).toBe(join(getBundledSkillsPath(), "readme.md"));
 		expect(diagnostics).toEqual([]);
 		expect(formatSkillsForPrompt(skills)).toContain("<name>readme</name>");
