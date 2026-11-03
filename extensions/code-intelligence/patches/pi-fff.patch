@@ -1,0 +1,19 @@
+--- a/node_modules/@ff-labs/pi-fff/src/index.ts
++++ b/node_modules/@ff-labs/pi-fff/src/index.ts
+@@ -998,7 +998,6 @@
+       `${names.grep}: prefer bare identifiers as patterns. Literal queries are most efficient.`,
+       `${names.grep}: use path for include ('src/', '*.ts') and exclude for noise ('test/,*.min.js').`,
+       `${names.grep}: caseSensitive: true when you need exact case (smart-case otherwise).`,
+-      `${names.grep}: after 1-2 greps, read the top match instead of more greps.`,
+     ],
+     parameters: grepSchema,
+ 
+@@ -1158,7 +1157,7 @@
+   const findSchema = Type.Object({
+     pattern: Type.String({
+       description:
+-        "Fuzzy filename search and glob search. Frecency-ranked, git-aware. Multi-word = narrower (AND) not bound to order, use for multi word related concept search. Prefer this over ls/find/bash as the first exploration step whenever the user names a concept, feature, or symbol — it surfaces the relevant files in one call. Only use ls/read on a directory when you specifically need the alphabetical layout of an unknown repo, or when a concept search returned nothing.",
++        "Fuzzy path and filename search. Multiple words narrow the path matches. Use content search for text and LSP for symbol definitions and references.",
+     }),
+     path: Type.Optional(
+       Type.String({

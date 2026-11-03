@@ -1,4 +1,4 @@
-// exposes AST search, hashline editing and language-server navigation with post-write diagnostics.
+// exposes AST search, hashline editing and a persistent debugger.
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Type } from "typebox";
@@ -6,46 +6,10 @@ import type { ExtensionAPI } from "../../core/extensions/types.ts";
 import { applyAstMatches, searchAst } from "./ast.ts";
 import { Debugger } from "./debugger.ts";
 import { editHashlines, readHashlines } from "./hashline.ts";
-import { LanguageServers } from "./lsp.ts";
-import { applyLspEdits, planLspEdits } from "./lsp-edits.ts";
 
 export default function codeExtension(pi: ExtensionAPI): void {
-	let servers = new LanguageServers();
 	const debuggerSession = new Debugger();
-	let closed = false;
-	pi.on("session_start", () => {
-		if (closed) {
-			servers = new LanguageServers();
-			closed = false;
-		}
-	});
-	pi.on("session_shutdown", async () => {
-		closed = true;
-		await Promise.all([servers.close(), debuggerSession.close()]);
-	});
-	pi.on("tool_result", async (event, ctx) => {
-		if (
-			event.isError ||
-			!["write", "edit", "hashline_edit"].includes(event.toolName) ||
-			typeof event.input.path !== "string" ||
-			!servers.supports(event.input.path)
-		)
-			return;
-		try {
-			const result = await servers.diagnostics(event.input.path, ctx.cwd, AbortSignal.timeout(10_000));
-			const text = result.confirmed
-				? JSON.stringify(result.diagnostics)
-				: "Diagnostics not confirmed: server did not publish a result.";
-			return { content: [...event.content, { type: "text", text: `Language-server diagnostics: ${text}` }] };
-		} catch {
-			return {
-				content: [
-					...event.content,
-					{ type: "text", text: "Language-server diagnostics unavailable; check the server installation." },
-				],
-			};
-		}
-	});
+	pi.on("session_shutdown", () => debuggerSession.close());
 	pi.registerTool({
 		name: "debugger",
 		label: "Debugger",
@@ -110,7 +74,7 @@ export default function codeExtension(pi: ExtensionAPI): void {
 		name: "ast_grep_replace",
 		label: "AST replace",
 		description:
-			"Preview or apply structural replacements on exactly one file. apply defaults to false. The engine resolves metavariables; applied byte ranges must be nonoverlapping and match current file bytes. File permissions are preserved; changed files receive LSP diagnostics when a server is installed.",
+			"Preview or apply structural replacements on exactly one file. apply defaults to false. The engine resolves metavariables; applied byte ranges must be nonoverlapping and match current file bytes. File permissions are preserved.",
 		parameters: Type.Object({
 			pattern: Type.String({ minLength: 1 }),
 			rewrite: Type.String(),
@@ -126,8 +90,7 @@ export default function codeExtension(pi: ExtensionAPI): void {
 				ctx.cwd,
 			);
 			const changed = params.apply ? await applyAstMatches(matches, ctx.cwd, signal) : [];
-			const diagnostics = await diagnosticsFor(changed, servers, ctx.cwd, signal);
-			return { content: [{ type: "text", text: JSON.stringify({ matches, changed, diagnostics }) }], details: {} };
+			return { content: [{ type: "text", text: JSON.stringify({ matches, changed }) }], details: {} };
 		},
 	});
 	pi.registerTool({
@@ -175,74 +138,4 @@ export default function codeExtension(pi: ExtensionAPI): void {
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
 		},
 	});
-	pi.registerTool({
-		name: "lsp_navigation",
-		label: "Language server",
-		description:
-			"Navigate through installed language servers. Operations: definition, references, hover, documentSymbol, workspaceSymbol, diagnostics and rename. path selects the server; line and character are one-based UTF-16 positions. Rename previews changes by default; apply=true writes text edits atomically per file, not as one transaction. Resource operations are refused.",
-		parameters: Type.Object({
-			operation: Type.Union(
-				["definition", "references", "hover", "documentSymbol", "workspaceSymbol", "diagnostics", "rename"].map(
-					(value) => Type.Literal(value),
-				),
-			),
-			path: Type.String({ minLength: 1 }),
-			line: Type.Optional(Type.Integer({ minimum: 1 })),
-			character: Type.Optional(Type.Integer({ minimum: 1 })),
-			query: Type.Optional(Type.String()),
-			newName: Type.Optional(Type.String({ minLength: 1 })),
-			apply: Type.Optional(Type.Boolean()),
-		}),
-		async execute(_id, params, signal, _update, ctx) {
-			let result: unknown;
-			if (params.operation === "diagnostics") result = await servers.diagnostics(params.path, ctx.cwd, signal);
-			else if (params.operation === "workspaceSymbol")
-				result = await servers.workspaceRequest(
-					"workspace/symbol",
-					params.path,
-					ctx.cwd,
-					{ query: params.query ?? "" },
-					signal,
-				);
-			else if (params.operation === "rename") {
-				if (!params.newName) throw new Error("rename requires newName");
-				const edit = await servers.request("textDocument/rename", params.path, ctx.cwd, {
-					line: params.line,
-					character: params.character,
-					params: { newName: params.newName },
-					signal,
-				});
-				const plans = await planLspEdits(edit);
-				const changed = params.apply ? await applyLspEdits(plans, signal) : [];
-				result = { edit, changed, diagnostics: await diagnosticsFor(changed, servers, ctx.cwd, signal) };
-			} else {
-				const method =
-					params.operation === "documentSymbol"
-						? "textDocument/documentSymbol"
-						: `textDocument/${params.operation}`;
-				const extra = params.operation === "references" ? { context: { includeDeclaration: true } } : undefined;
-				result = await servers.request(method, params.path, ctx.cwd, {
-					line: params.line,
-					character: params.character,
-					params: extra,
-					signal,
-				});
-			}
-			return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
-		},
-	});
-}
-
-async function diagnosticsFor(paths: string[], servers: LanguageServers, cwd: string, signal?: AbortSignal) {
-	return Promise.all(
-		paths.map(async (path) => {
-			if (!servers.supports(path)) return { path, confirmed: false, reason: "No language server installed" };
-			try {
-				return { path, ...(await servers.diagnostics(path, cwd, signal)) };
-			} catch {
-				signal?.throwIfAborted();
-				return { path, confirmed: false, reason: "Language-server diagnostics unavailable" };
-			}
-		}),
-	);
 }

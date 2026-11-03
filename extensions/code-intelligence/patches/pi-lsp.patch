@@ -1,0 +1,266 @@
+--- a/node_modules/@ian-pascoe/pi-lsp/src/lsp-diagnostics-text.ts
++++ b/node_modules/@ian-pascoe/pi-lsp/src/lsp-diagnostics-text.ts
+@@ -118,9 +118,7 @@
+   if (!silence.pushOnly) {
+     return `no diagnostics received from ${serverId} within ${wait} (the request stalled; the server may still be starting or indexing, so retry later)`;
+   }
+-  return silence.remembered
+-    ? `no diagnostics published by ${serverId} for this unchanged file (an earlier wait of ${wait} saw none; not a failure, the file may be clean; edit the file to wait again)`
+-    : `no diagnostics published by ${serverId} within ${wait} (not a failure; a server that only pushes diagnostics stays silent for a clean file, so the file may be clean)`;
++  return `diagnostics unconfirmed by ${serverId} within ${wait}; no current versioned report was received, not a clean result`;
+ }
+ 
+ /** The lines of the queried document's read: one per LSP Diagnostic, or one saying it has none. */
+--- a/node_modules/@ian-pascoe/pi-lsp/src/lsp-post-edit-diagnostics.ts
++++ b/node_modules/@ian-pascoe/pi-lsp/src/lsp-post-edit-diagnostics.ts
+@@ -199,7 +199,12 @@
+ export function extractPostEditDiagnosticPaths(
+   event: Pick<ToolResultEvent, "toolName" | "input" | "details" | "isError">,
+ ): ExtractedMutation | undefined {
+-  if (event.toolName === "edit" || event.toolName === "write") {
++  const reported = (event.details as { code_intelligence?: { paths?: unknown } } | undefined)?.code_intelligence?.paths;
++  if (Array.isArray(reported) && reported.every((path) => typeof path === "string")) {
++    return { paths: [...new Set(reported)].map((path) => ({ path })), warnings: [] };
++  }
++  if (event.toolName === "ast_grep_replace" && event.input.apply !== true) return undefined;
++  if (["edit", "write", "hashline_edit", "ast_grep_replace"].includes(event.toolName)) {
+     if (event.isError || !Value.Check(NativeMutationInputSchema, event.input)) return undefined;
+     return { paths: [{ path: event.input.path }], warnings: [] };
+   }
+--- a/node_modules/@ian-pascoe/pi-lsp/src/lsp-server-client.ts
++++ b/node_modules/@ian-pascoe/pi-lsp/src/lsp-server-client.ts
+@@ -201,6 +201,7 @@
+   readonly languageId: string;
+   /** Diagnostics revision before this version was sent; later pushes may describe it. */
+   readonly synchronizedRevision: number;
++  readonly checkRevision: number;
+ }
+ 
+ interface PushDiagnosticsState {
+@@ -316,12 +317,15 @@
+   private positionEncodingValue: LspPositionEncoding = "utf-16";
+   private textDocumentSyncKind: TextDocumentSyncKind = TextDocumentSyncKind.None;
+   private readonly openDocuments = new Map<string, OpenDocumentState>();
+-  private readonly documentSynchronizations = new Map<string, Promise<LspSynchronizedDocument>>();
+   private readonly pushDiagnostics = new Map<string, PushDiagnosticsState>();
+   private readonly pullDiagnostics = new Map<string, PullDiagnosticsState>();
+   private readonly dynamicRegistrations = new Map<string, Registration>();
+   private readonly diagnosticWaiters = new Map<string, Set<() => void>>();
+   private diagnosticsRevision = 0;
++  private readonly analysisTokens = new Set<string>();
++  private completedChecks = 0;
++  private serverQuiescent: boolean | undefined;
++  private refreshingDocuments = Promise.resolve();
+   private readonly diagnosticsLimiter: LspRequestLimiter;
+   /** Document version of each URI whose diagnostics wait ended in silence from a push-only server. */
+   private readonly silentDocumentVersions = new Map<string, number>();
+@@ -566,6 +570,14 @@
+     parameters: unknown,
+     signal?: AbortSignal,
+   ): Promise<TResult> {
++    const deadline = Date.now() + requestBudgetMs(method, this.options.timeouts);
++    while (this.analysisTokens.size > 0 || this.serverQuiescent === false ||
++      (/rust-analyzer/i.test(this.options.command) && this.serverQuiescent !== true)) {
++      this.throwIfUnavailable();
++      if (signal?.aborted) throw abortError(this.options);
++      if (Date.now() >= deadline) throw timeoutError(this.options, `workspace analysis before ${method}`);
++      await new Promise((resolve) => setTimeout(resolve, 20));
++    }
+     return this.sendRequestWithBudget<TResult>(
+       method,
+       parameters,
+@@ -576,29 +588,19 @@
+   }
+ 
+   /** Open or update a valid UTF-8 file and maintain the 100-document LRU. */
+-  async synchronizeDocument(
+-    filePath: string,
+-    languageId: string,
+-  ): Promise<LspSynchronizedDocument> {
++  async synchronizeDocument(filePath: string, languageId: string): Promise<LspSynchronizedDocument> {
+     const absolutePath = resolve(filePath);
+-    const uri = pathToFileURL(absolutePath).href;
+-    const activeSynchronization = this.documentSynchronizations.get(uri);
+-    const waitForActiveSynchronization =
+-      activeSynchronization?.then(
+-        () => undefined,
+-        () => undefined,
+-      ) ?? Promise.resolve();
+-    const synchronization = waitForActiveSynchronization.then(() =>
+-      this.synchronizeDocumentOnce(absolutePath, uri, languageId),
+-    );
+-    this.documentSynchronizations.set(uri, synchronization);
+-    try {
+-      return await synchronization;
+-    } finally {
+-      if (this.documentSynchronizations.get(uri) === synchronization) {
+-        this.documentSynchronizations.delete(uri);
+-      }
+-    }
++    const synchronization = this.refreshingDocuments.then(async () => {
++      for (const open of [...this.openDocuments.values()]) {
++        const path = fileURLToPath(open.uri);
++        if (path === absolutePath) continue;
++        try { await this.synchronizeDocumentOnce(path, open.uri, open.languageId); }
++        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") await this.closeDocument(path); else throw error; }
++      }
++      return this.synchronizeDocumentOnce(absolutePath, pathToFileURL(absolutePath).href, languageId);
++    });
++    this.refreshingDocuments = synchronization.then(() => undefined, () => undefined);
++    return synchronization;
+   }
+ 
+   private async synchronizeDocumentOnce(
+@@ -637,6 +639,7 @@
+       text,
+       languageId,
+       synchronizedRevision: this.diagnosticsRevision,
++      checkRevision: this.completedChecks,
+     };
+ 
+     if (this.textDocumentSyncKind !== TextDocumentSyncKind.None) {
+@@ -661,12 +664,11 @@
+           textDocument: { uri, version: next.version },
+           contentChanges,
+         });
+-        if (serverWantsSave(this.capabilitiesValue)) {
+-          await this.connection.sendNotification(DidSaveTextDocumentNotification.type, {
+-            textDocument: { uri },
+-            text,
+-          });
+-        }
++      }
++      if (serverWantsSave(this.capabilitiesValue)) {
++        await this.connection.sendNotification(DidSaveTextDocumentNotification.type, {
++          textDocument: { uri }, text,
++        });
+       }
+     }
+ 
+@@ -711,6 +713,7 @@
+     signal?: AbortSignal,
+   ): Promise<LspDocumentDiagnosticResult> {
+     const document = await this.synchronizeDocument(filePath, languageId);
++    if (!(await this.waitForAnalysis(document, signal))) return this.silentWaitResult(false, false);
+     return this.awaitDocumentDiagnostics(document, signal);
+   }
+ 
+@@ -727,6 +730,19 @@
+     if (open?.version !== document.version) return [];
+     const result = await this.awaitDocumentDiagnostics(document, signal);
+     return result.diagnostics;
++  }
++
++  private async waitForAnalysis(document: LspSynchronizedDocument, signal?: AbortSignal): Promise<boolean> {
++    const rust = /rust-analyzer/i.test(this.options.command);
++    const baseline = this.openDocuments.get(document.uri)?.checkRevision ?? this.completedChecks;
++    const deadline = Date.now() + this.options.timeouts.diagnosticsMs;
++    while (this.analysisTokens.size > 0 || (rust && this.completedChecks <= baseline)) {
++      this.throwIfUnavailable();
++      if (signal?.aborted) throw abortError(this.options);
++      if (Date.now() >= deadline) return false;
++      await new Promise((resolve) => setTimeout(resolve, 20));
++    }
++    return true;
+   }
+ 
+   private async awaitDocumentDiagnostics(
+@@ -993,6 +1009,17 @@
+         this.removeDynamicRegistration(registration);
+       }
+     });
++    this.connection.onNotification("experimental/serverStatus", (parameters: { quiescent?: boolean }) => {
++      this.serverQuiescent = parameters.quiescent;
++    });
++    this.connection.onNotification("$/progress", (parameters: { token: string | number; value: { kind: string } }) => {
++      const token = String(parameters.token);
++      if (parameters.value.kind === "begin") this.analysisTokens.add(token);
++      if (parameters.value.kind === "end") {
++        this.analysisTokens.delete(token);
++        if (/check|flycheck/i.test(token)) this.completedChecks++;
++      }
++    });
+     this.connection.onRequest(WorkDoneProgressCreateRequest.type, () => undefined);
+     this.connection.onRequest(DiagnosticRefreshRequest.type, () => undefined);
+     this.connection.onRequest(ApplyWorkspaceEditRequest.type, async (parameters) =>
+@@ -1022,6 +1049,7 @@
+                 PositionEncodingKind.UTF32,
+               ],
+             },
++            experimental: { serverStatusNotification: true },
+             window: { workDoneProgress: true },
+             workspace: {
+               applyEdit: true,
+@@ -1073,7 +1101,11 @@
+               rangeFormatting: { dynamicRegistration: true },
+               onTypeFormatting: { dynamicRegistration: true },
+               rename: { dynamicRegistration: true, prepareSupport: true },
+-              codeAction: { dynamicRegistration: true, isPreferredSupport: true },
++              codeAction: {
++                dynamicRegistration: true, isPreferredSupport: true,
++                codeActionLiteralSupport: { codeActionKind: { valueSet: ["", "quickfix", "refactor", "source", "source.organizeImports"] } },
++                resolveSupport: { properties: ["edit"] },
++              },
+             },
+           },
+         },
+@@ -1184,7 +1216,7 @@
+     if (
+       current !== undefined &&
+       current.revision > previousRevision &&
+-      (current.version === undefined || current.version === version)
++      current.version === version
+     ) {
+       return current.diagnostics;
+     }
+--- a/node_modules/@ian-pascoe/pi-lsp/src/lsp-tool.ts
++++ b/node_modules/@ian-pascoe/pi-lsp/src/lsp-tool.ts
+@@ -243,6 +243,7 @@
+   hasCapability(method: string): boolean;
+   /** Open or update one UTF-8 document before a document request. */
+   synchronizeDocument(filePath: string, languageId: string): Promise<LspSynchronizedDocument>;
++  closeDocument(filePath: string): Promise<void>;
+   /** Absolute paths of the documents tracked as synchronized, oldest first. */
+   synchronizedDocumentPaths(): readonly string[];
+   /** Send one cancellable protocol request. */
+@@ -2001,6 +2002,20 @@
+   const sortedChangedPaths = [...new Set(changedPaths)].sort((left, right) =>
+     left.localeCompare(right),
+   );
++  const syncWarnings: string[] = [];
++  for (const path of sortedChangedPaths) {
++    const exists = await stat(path).then(() => true, (error) => {
++      if (error.code === "ENOENT") return false;
++      throw error;
++    });
++    const sync = await dependencies.manager.runRead(path, undefined,
++      { method: "workspace edit synchronization", isSupportedBy: () => true },
++      async (client, route) => {
++        if (exists) await client.synchronizeDocument(path, route.language.languageId);
++        else await client.closeDocument(path);
++      });
++    for (const failure of sync.failures) syncWarnings.push(failure.message);
++  }
+   const details: Extract<LspToolResultDetails, { kind: "workspace_edit_apply" }> = {
+     kind: "workspace_edit_apply",
+     preview_id: parameters.preview_id,
+@@ -2010,7 +2025,7 @@
+   };
+   const json = formatLspToolValue(result);
+   return createLspToolOutput(
+-    formatApplyText(parameters.preview_id, result, context.cwd),
++    [formatApplyText(parameters.preview_id, result, context.cwd), ...syncWarnings.map((warning) => `LSP synchronization incomplete: ${warning}`)].join("\n"),
+     details,
+     {
+       ...lspStructuredFields(json),
+--- a/node_modules/@ian-pascoe/pi-lsp/src/pi-lsp-extension.ts
++++ b/node_modules/@ian-pascoe/pi-lsp/src/pi-lsp-extension.ts
+@@ -243,7 +243,7 @@
+         undefined,
+         {
+           method: DocumentDiagnosticRequest.method,
+-          isSupportedBy: (client) => client.hasCapability(DocumentDiagnosticRequest.method),
++          isSupportedBy: () => true,
+         },
+         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
+           const serverOutcomes = await this.pullServer(

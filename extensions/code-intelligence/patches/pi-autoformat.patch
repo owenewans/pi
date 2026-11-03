@@ -1,0 +1,238 @@
+--- a/node_modules/@gotgenes/pi-autoformat/src/extension.ts
++++ b/node_modules/@gotgenes/pi-autoformat/src/extension.ts
+@@ -1,5 +1,6 @@
+ import { execFile } from "node:child_process";
+ import { promisify } from "node:util";
++import { readFile } from "node:fs/promises";
+ 
+ import {
+   type ExtensionAPI,
+@@ -108,6 +109,7 @@
+   loadResult: LoadConfigResult;
+   autoformatter: PromptAutoformatterLike;
+   snapshotTracker: SnapshotTracker | undefined;
++  snapshotWarnings: string[];
+   unsubscribeEventBus: (() => void) | undefined;
+ };
+ 
+@@ -586,6 +588,7 @@
+     dependencies.reportConfigIssues ?? defaultReportConfigIssues;
+ 
+   let state: SessionState | undefined;
++  const versionControlCalls = new Set<string>();
+   let pendingFlush = Promise.resolve<PromptAutoformatterResult | undefined>(
+     undefined,
+   );
+@@ -597,11 +600,13 @@
+ 
+     const loadResult = loadConfig(cwd);
+     const detection = loadResult.config.shellMutationDetection;
++    const snapshotWarnings: string[] = [];
+     const snapshotTracker =
+       detection.enabled && detection.snapshotGlobs.length > 0
+         ? new SnapshotTracker({
+             cwd,
+             globs: detection.snapshotGlobs,
++            onWarn: (message) => snapshotWarnings.push(message),
+           })
+         : undefined;
+     const autoformatter = createAutoformatter(cwd, loadResult.config);
+@@ -615,6 +620,7 @@
+       loadResult,
+       autoformatter,
+       snapshotTracker,
++      snapshotWarnings,
+       unsubscribeEventBus,
+     };
+     return state;
+@@ -629,6 +635,7 @@
+     }
+ 
+     pendingFlush = pendingFlush
++      .catch(() => undefined)
+       .then(async () => {
+         const result = await sessionState.autoformatter.flushPrompt();
+         reportFlushResult(result, {
+@@ -640,7 +647,7 @@
+       .catch((error: unknown) => {
+         const message = error instanceof Error ? error.message : String(error);
+         reportMessage(ctx, `Unexpected runtime error: ${message}`, "warning");
+-        return undefined;
++        throw error;
+       });
+ 
+     return pendingFlush;
+@@ -656,16 +663,24 @@
+     if (event.toolName !== "bash") {
+       return;
+     }
++    if (/\bgit(?:\s+-C\s+\S+)?\s+(?:switch|checkout|restore|reset|clean|pull|merge|rebase)\b/.test(String(event.input.command ?? ""))) {
++      versionControlCalls.add(event.toolCallId);
++      return;
++    }
+     const sessionState = ensureState(ctx.cwd);
++    sessionState.snapshotWarnings.length = 0;
+     sessionState.snapshotTracker?.before();
+   });
+ 
+-  pi.on("tool_result", (event: ToolResultEvent, ctx) => {
+-    if (event.isError) {
+-      return;
+-    }
+-
++  pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
++    if (versionControlCalls.delete(event.toolCallId)) return;
++    const changedPaths = (event.details as { changed_paths?: unknown } | undefined)?.changed_paths;
++    if (event.isError && !Array.isArray(changedPaths) && event.toolName !== "bash") return;
++    if (event.toolName === "ast_grep_replace" && event.input.apply !== true) return;
+     const sessionState = ensureState(ctx.cwd);
++    if (Array.isArray(changedPaths)) {
++      for (const path of changedPaths) if (typeof path === "string") sessionState.autoformatter.addTouchedPath(path);
++    }
+     const output = extractToolOutputText(event.content);
+     sessionState.autoformatter.recordToolResult(
+       event.toolName,
+@@ -678,6 +693,33 @@
+       for (const touched of snapshotTouched) {
+         sessionState.autoformatter.addTouchedPath(touched);
+       }
++    }
++    try {
++      const result = await queueFlush(ctx);
++      const warnings = sessionState.snapshotWarnings.splice(0);
++      if (!result || result.groups.length === 0) {
++        if (warnings.length) return { content: [...event.content, { type: "text" as const, text: warnings.join("\n") }] };
++        return;
++      }
++      const paths = [...new Set(result.groups.flatMap((group) => group.files))];
++      const report = [buildSteeringMessageContent(result) ?? "Formatting and configured checks completed.", ...warnings].join("\n");
++      const text = report.length > 12000 ? report.slice(0, 12000) + "\n[checker output truncated]" : report;
++      const excerpts: string[] = [];
++      let budget = 8000;
++      for (const path of result.groups.flatMap((group) => group.changedFiles)) {
++        if (budget <= 0) break;
++        const source = await readFile(path, "utf8").catch(() => undefined);
++        if (source === undefined) continue;
++        const excerpt = source.slice(0, Math.min(budget, 3000));
++        excerpts.push(`Final file ${path}:\n${excerpt}${source.length > excerpt.length ? "\n[excerpt truncated]" : ""}`);
++        budget -= excerpt.length;
++      }
++      return {
++        content: [...event.content, { type: "text" as const, text: [text, ...excerpts].join("\n\n") }],
++        details: { ...(event.details ?? {}), code_intelligence: { paths } },
++      };
++    } catch (error) {
++      return { content: [...event.content, { type: "text" as const, text: `Formatting/checking incomplete: ${String(error)}` }] };
+     }
+   });
+ 
+--- a/node_modules/@gotgenes/pi-autoformat/src/prompt-autoformatter.ts
++++ b/node_modules/@gotgenes/pi-autoformat/src/prompt-autoformatter.ts
+@@ -1,5 +1,6 @@
+ import { createHash } from "node:crypto";
+-import { readFile } from "node:fs/promises";
++import { readFile, realpath } from "node:fs/promises";
++import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+ 
+ import type { DiscoveryCache } from "./builtin-formatters";
+ import {
+@@ -86,6 +87,14 @@
+ 
+   async flushPrompt(): Promise<PromptAutoformatterResult> {
+     const touchedFiles = this.queue.flush();
++    const paths = [...new Set(await Promise.all(touchedFiles.map((path) => realpath(path).catch(() => path))))].sort();
++    const lock = (index: number): Promise<PromptAutoformatterResult> => index === paths.length
++      ? this.flushFiles(touchedFiles)
++      : withFileMutationQueue(paths[index], () => lock(index + 1));
++    return lock(0);
++  }
++
++  private async flushFiles(touchedFiles: string[]): Promise<PromptAutoformatterResult> {
+     const fileGroups = groupFilesByChain(touchedFiles, this.config);
+     const groupResults: ChainGroupResult[] = [];
+ 
+--- a/node_modules/@gotgenes/pi-autoformat/src/shell-mutation-detector.ts
++++ b/node_modules/@gotgenes/pi-autoformat/src/shell-mutation-detector.ts
+@@ -1,4 +1,5 @@
+-import { statSync } from "node:fs";
++import { globSync, readFileSync, statSync } from "node:fs";
++import { createHash } from "node:crypto";
+ import path from "node:path";
+ 
+ export type WrapperOutputFormat = "lines";
+@@ -444,7 +445,7 @@
+   /** Resolve globs to absolute file paths. Injected for tests. */
+   resolveGlobs?: (cwd: string, globs: string[]) => string[];
+   /** stat function — injected for tests. */
+-  stat?: (absPath: string) => { mtimeMs: number } | undefined;
++  stat?: (absPath: string) => { mtimeMs: number; fingerprint?: string } | undefined;
+   /** Maximum entries to track before warning + truncating. */
+   maxEntries?: number;
+   /** Receives a single message string when the cap is exceeded. */
+@@ -453,23 +454,23 @@
+ 
+ const DEFAULT_MAX_ENTRIES = 5000;
+ 
+-function defaultStat(absPath: string): { mtimeMs: number } | undefined {
++function defaultStat(absPath: string): { mtimeMs: number; fingerprint?: string } | undefined {
+   try {
+     const s = statSync(absPath);
+     if (!s.isFile()) {
+       return undefined;
+     }
+-    return { mtimeMs: s.mtimeMs };
++    const hash = createHash("sha256").update(readFileSync(absPath)).digest("hex");
++    return { mtimeMs: s.mtimeMs, fingerprint: hash };
+   } catch {
+     return undefined;
+   }
+ }
+ 
+-function defaultResolveGlobs(_cwd: string, _globs: string[]): string[] {
+-  // Real glob resolution lives at the wiring layer (and may be deferred until
+-  // we add a glob library). The default is a no-op so the tracker is testable
+-  // in isolation via the injectable resolver.
+-  return [];
++function defaultResolveGlobs(cwd: string, globs: string[]): string[] {
++  return globSync(globs, {
++    cwd, exclude: ["**/node_modules/**", "**/.git/**", "**/target/**", "**/dist/**", "**/.venv/**", "**/vendor/**", "**/.cache/**"],
++  }).map((file) => path.resolve(cwd, file)).sort();
+ }
+ 
+ /**
+@@ -489,7 +490,7 @@
+       onWarn: (message: string) => void;
+     };
+ 
+-  private snapshot: Map<string, number> | undefined;
++  private snapshot: Map<string, string | number> | undefined;
+ 
+   constructor(options: SnapshotTrackerOptions) {
+     this.options = {
+@@ -511,7 +512,7 @@
+       this.options.cwd,
+       this.options.globs,
+     );
+-    const snapshot = new Map<string, number>();
++    const snapshot = new Map<string, string | number>();
+     let truncated = false;
+     for (const file of files) {
+       if (snapshot.size >= this.options.maxEntries) {
+@@ -523,7 +524,7 @@
+         : path.resolve(this.options.cwd, file);
+       const s = this.options.stat(abs);
+       if (s) {
+-        snapshot.set(abs, s.mtimeMs);
++        snapshot.set(abs, s.fingerprint ?? s.mtimeMs);
+       }
+     }
+     if (truncated) {
+@@ -562,7 +563,7 @@
+         continue;
+       }
+       const prior = before.get(abs);
+-      if (prior === undefined || s.mtimeMs > prior) {
++      if (prior === undefined || (s.fingerprint ?? s.mtimeMs) !== prior) {
+         touched.push(abs);
+       }
+     }

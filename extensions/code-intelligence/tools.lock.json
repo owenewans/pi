@@ -1,0 +1,19 @@
+{
+  "ruff": {
+    "version": "0.17.3",
+    "url": "https://files.pythonhosted.org/packages/f0/20/fecedea2209f574ab92033b344e01a7f0c2dc76c6d6d19a14c9f8141173f/ruff-0.17.3-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "7fa4b0f931cdbcb8a52044f370a3eb429fb42eb88807b0e800fcaa98dd42b24e",
+    "format": "wheel",
+    "member": "ruff-0.17.3.data/scripts/ruff",
+    "license": "MIT",
+    "binarySha256": "6761c67c2b307be3905473b165eb5af0fb2f083836b04f9e4a8cdd0caee37833"
+  },
+  "rust-analyzer": {
+    "version": "2026-11-02",
+    "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-11-02/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+    "sha256": "5249da68c3f36bb77ea7d401824f5e8bd8d0a47a162daf5f72208eb7c1bf1500",
+    "format": "gzip",
+    "license": "MIT OR Apache-2.0",
+    "binarySha256": "23ac93011a30b2d1689e2bde2fa1034c996dc7de8bdc887930747eee01c8f66f"
+  }
+}

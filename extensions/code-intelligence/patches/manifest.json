@@ -1,0 +1,88 @@
+[
+  {
+    "name": "@ian-pascoe/pi-lsp",
+    "version": "0.15.4",
+    "source": "https://github.com/ian-pascoe/pi-extensions",
+    "license": "MIT",
+    "patch": "pi-lsp.patch",
+    "files": [
+      {
+        "path": "src/lsp-diagnostics-text.ts",
+        "before": "e11e3c426df62deca2843a243a7f54056a90eebdcf44381ad520696e78e3585e",
+        "after": "fc7abdcb85d8d51a4de1f486b726c365dd5e347e4f6bc8926bc3b60eba2040d3"
+      },
+      {
+        "path": "src/lsp-post-edit-diagnostics.ts",
+        "before": "523799251c425c25ad42f7ae79ccd2cadb3833f8e3b57fb16daea9eaced5de2f",
+        "after": "128be78684d0a26629fc14e1a61a630cd0b33d58502ab580a8ce41ea56f62dd1"
+      },
+      {
+        "path": "src/lsp-server-client.ts",
+        "before": "9ac61d6988949c75ea2db3e45367f537119065ca394ffb004e1f3b466a19ff47",
+        "after": "519c4533c77391e4506fb0975d370f2af496f0d0d061a4d475d9ed7e336ca722"
+      },
+      {
+        "path": "src/lsp-tool.ts",
+        "before": "3f3ce1b5c630030e8fc1c07d4cafb874d7d37ecc41d38a16998a850435927bd3",
+        "after": "2133ad955db4fbc1d8659592593d118d1bcf0a8420c47450bb91c27f07d69c32"
+      },
+      {
+        "path": "src/pi-lsp-extension.ts",
+        "before": "5a868ba85654e62dc0870d7968da517445a4fdad52030e6f98924983eeebba99",
+        "after": "be49f1f6f047c4cbbe979adc576c69abae2696e08bfb613350ecd18d7877ad8c"
+      }
+    ]
+  },
+  {
+    "name": "@gotgenes/pi-autoformat",
+    "version": "5.1.11",
+    "source": "https://github.com/gotgenes/pi-packages",
+    "license": "MIT",
+    "patch": "pi-autoformat.patch",
+    "files": [
+      {
+        "path": "src/extension.ts",
+        "before": "a1e4d45674dfbe4504a671df17f501c57f58afdf0b803d9caa27f25940f78f0a",
+        "after": "59a46e29cbfb9f94f1886b6e62237f234f7b3aaaf4fd621299645f207b5295a2"
+      },
+      {
+        "path": "src/prompt-autoformatter.ts",
+        "before": "9d16e485bd0423626d352952337b286f0973e96748b02b6bcf5296713eb21868",
+        "after": "1f081aff82b8ba7b994026b3ee31803c7042c92372908029343e8a2e120d879b"
+      },
+      {
+        "path": "src/shell-mutation-detector.ts",
+        "before": "8d9807e9dbf741dfcb5096c04bd40571c4f557df5a537fcee9c4b60d3572ecbb",
+        "after": "1524bf0405f1844403805c73a8a5c17e0b25c3dedf83962857434371135200f3"
+      }
+    ]
+  },
+  {
+    "name": "pi-fovea",
+    "version": "0.33.2",
+    "source": "https://github.com/fabric-runtime/pi-fovea",
+    "license": "MIT",
+    "patch": "pi-fovea.patch",
+    "files": [
+      {
+        "path": "src/core/session.ts",
+        "before": "c7fece1a6913e042e24011c24049d8003efc931f79d5f850b75e2fb500af3fa4",
+        "after": "bed07fe455f59ed6d1935873d90f447a433e58c71ecb6ce4f8cf1150b86103b1"
+      }
+    ]
+  },
+  {
+    "name": "@ff-labs/pi-fff",
+    "version": "0.11.0",
+    "source": "https://github.com/dmtrKovalenko/fff",
+    "license": "MIT",
+    "patch": "pi-fff.patch",
+    "files": [
+      {
+        "path": "src/index.ts",
+        "before": "cc34d7d15f9887de3e9efe61a8306e64a89d83e2f9099c3d53830cc2ae1257e7",
+        "after": "110067f19b0a5d49e8a653836c0dd6a4b0e083aec347e15412192ff6dd357882"
+      }
+    ]
+  }
+]

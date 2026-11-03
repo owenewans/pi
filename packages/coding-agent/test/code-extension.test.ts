@@ -1,13 +1,14 @@
-// verifies code tools and write diagnostics through the extension runner.
+// verifies code tools without language-server hooks through the extension runner.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { Debugger } from "../src/extensions/code/debugger.ts";
 import codeExtension from "../src/extensions/code/index.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -18,6 +19,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
 	await runner?.emit({ type: "session_shutdown", reason: "quit" });
+	vi.restoreAllMocks();
 	rmSync(directory, { recursive: true, force: true });
 });
 
@@ -44,7 +46,6 @@ describe("code extension", () => {
 			"ast_grep_replace",
 			"hashline_read",
 			"hashline_edit",
-			"lsp_navigation",
 		]);
 		for (const tool of extension.tools.values()) expect(tool.definition.parameters).toMatchObject({ type: "object" });
 		const path = join(directory, "fixture.txt");
@@ -67,6 +68,53 @@ describe("code extension", () => {
 				ctx,
 			);
 		expect(readFileSync(path, "utf8")).toBe("after\n");
+	});
+	it.each(["write", "edit", "hashline_edit"])(
+		"leaves %s results unchanged without diagnostic hooks",
+		async (toolName) => {
+			const extension = await setup();
+			expect([...extension.handlers.keys()]).toEqual(["session_shutdown"]);
+			expect(
+				await runner.emitToolResult({
+					type: "tool_result",
+					toolName,
+					toolCallId: "fixture",
+					input: { path: join(directory, "fixture.c") },
+					content: [{ type: "text", text: "written" }],
+					details: undefined,
+					isError: false,
+				}),
+			).toBeUndefined();
+		},
+	);
+	it("closes the debugger on session shutdown", async () => {
+		const close = vi.spyOn(Debugger.prototype, "close");
+		await setup();
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
+		expect(close).toHaveBeenCalledTimes(1);
+	});
+	it("previews and applies AST replacements without diagnostics", async () => {
+		const extension = await setup();
+		const path = join(directory, "fixture.ts");
+		writeFileSync(path, "foo(1);\n");
+		const tool = extension.tools.get("ast_grep_replace")!.definition;
+		const ctx = runner.createToolContext("fixture", undefined);
+		for (const apply of [false, true]) {
+			const result = await tool.execute(
+				"fixture",
+				{ path, pattern: "foo($ARG)", rewrite: "bar($ARG)", lang: "typescript", apply },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const content = result.content[0];
+			if (content.type !== "text") throw new Error("expected text");
+			expect(JSON.parse(content.text)).toEqual({
+				matches: [expect.objectContaining({ text: "foo(1)", replacement: "bar(1)" })],
+				changed: apply ? [path] : [],
+			});
+			expect(readFileSync(path, "utf8")).toBe(apply ? "bar(1);\n" : "foo(1);\n");
+		}
 	});
 	it("refuses AST replacement on directories", async () => {
 		const extension = await setup();
