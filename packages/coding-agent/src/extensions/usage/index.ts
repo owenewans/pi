@@ -281,12 +281,16 @@ async function fetchAntigravityUsage(raw: string): Promise<AntigravityUsage> {
 			for (const value of Array.isArray(buckets) ? buckets : []) {
 				const bucket = record(value);
 				if (!bucket) continue;
+				const quota = fractionQuota(bucket);
+				if (!quota) continue;
 				const groupName = text(group?.displayName);
 				const bucketName = text(bucket.displayName) ?? text(bucket.bucketId);
 				const window = text(bucket.window);
 				let label = "Quota";
 				if (groupName && bucketName && bucketName.includes("Limit Remaining") && window) {
-					const cleanGroup = groupName.replace(/ Models$/i, "").replace(/Claude and GPT models/i, "Claude & GPT");
+					const cleanGroup = groupName
+						.replace(/ Models$/i, "")
+						.replace(/Claude and GPT( models)?/i, "Claude & GPT");
 					label = `${cleanGroup} (${window})`;
 				} else {
 					const parts = [groupName, bucketName ?? "Quota"].filter((p): p is string => Boolean(p));
@@ -295,7 +299,7 @@ async function fetchAntigravityUsage(raw: string): Promise<AntigravityUsage> {
 				}
 				usage.groups.push({
 					label: label || "Quota",
-					quota: fractionQuota(bucket),
+					quota,
 				});
 			}
 		}
@@ -308,9 +312,10 @@ async function fetchAntigravityUsage(raw: string): Promise<AntigravityUsage> {
 		const seenModels = new Set<string>();
 		for (const [id, value] of Object.entries(catalog ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
 			const model = record(value);
-			if (!model || model.isInternal === true || id.startsWith("chat_")) continue;
+			if (!model || model.isInternal === true || /^(chat_|tab_|MODEL_)/i.test(id)) continue;
 			const quota = fractionQuota(record(model.quotaInfo));
-			if (usage.groups.length > 0 && quota && existingFractions.has(quota.remaining)) continue;
+			if (!quota) continue;
+			if (usage.groups.length > 0 && existingFractions.has(quota.remaining)) continue;
 			const clean = id
 				.replace(/-(?:low|medium|high|tiered|disabled|thinking)$/, "")
 				.replace(/^gemini-3-flash-agent$/, "gemini-3.5-flash");

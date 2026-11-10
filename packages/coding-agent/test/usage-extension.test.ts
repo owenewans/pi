@@ -483,9 +483,7 @@ describe("Antigravity usage", () => {
 				},
 			});
 			const output = formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey));
-			expect(output).toContain("unknown: unavailable");
-			expect(output).toContain("missing: unavailable");
-			expect(output).toContain("pool: unavailable");
+			expect(output).toContain("Quota: unavailable");
 			expect(output).not.toMatch(/100%|Weekly|Monthly/);
 		},
 	);
