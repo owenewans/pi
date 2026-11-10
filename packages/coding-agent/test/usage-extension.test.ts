@@ -99,7 +99,7 @@ describe("account usage", () => {
 			monthly: { remaining: 75 },
 			monthlyKind: "extra",
 		});
-		expect(formatAccountUsage(usage)).toContain("Monthly extra [:::::::::::::::     ] left 75%\nResets: unknown");
+		expect(formatAccountUsage(usage)).toContain("Monthly extra   75% left  ████████░░");
 	});
 
 	it.each([
@@ -339,7 +339,7 @@ describe("account usage", () => {
 				monthly: { remaining: 0, resetsAt: Date.parse("2026-11-01T03:30:00Z") },
 			}),
 		).toBe(
-			"Usage [:::::::::::::::     ] left 75%\nResets: unknown\nWeekly [::::::::::          ] left 50%\nResets: 2026-10-30 03:30 UTC in 24h 0m\nMonthly [                    ] left 0%\nResets: 2026-11-01 03:30 UTC in 72h 0m",
+			"  Usage           75% left  ████████░░\n  Weekly          50% left  █████░░░░░  resets in 1d\n  Monthly          0% left  ░░░░░░░░░░  resets in 3d",
 		);
 	});
 
@@ -351,18 +351,14 @@ describe("account usage", () => {
 				remaining: 75,
 				resetsAt: Date.parse("2026-10-29T06:00:00Z"),
 			}),
-		).toBe(
-			"Usage [:::::::::::::::     ] left 75%\nResets: 2026-10-29 06:00 UTC in 2h 30m\nWeekly: unavailable (not reported by API)\nMonthly: unavailable (not reported by API)",
-		);
-		expect(formatAccountUsage({ remaining: 0 })).toBe(
-			"Usage [                    ] left 0%\nResets: unknown\nWeekly: unavailable (not reported by API)\nMonthly: unavailable (not reported by API)",
-		);
+		).toBe("  Usage           75% left  ████████░░  resets in 2h 30m");
+		expect(formatAccountUsage({ remaining: 0 })).toBe("  Usage            0% left  ░░░░░░░░░░");
 		expect(
 			formatAccountUsage({
 				remaining: 100,
 				resetsAt: Date.parse("2026-10-29T03:00:00Z"),
 			}),
-		).toContain("in 0h 0m");
+		).toContain("resets now");
 	});
 });
 
@@ -438,7 +434,7 @@ describe("Antigravity usage", () => {
 		const output = formatAccountUsage(usage);
 		expect(output).toContain("Antigravity (Google AI Pro)");
 		expect(output).toContain("Shared quota pools");
-		expect(output).toContain("gemini-pro [:::::::::::::::     ] left 75%");
+		expect(output).toContain("gemini-pro              75% left  ████████░░");
 		expect(output).not.toMatch(/Weekly|Monthly|private-token|fixture-project/);
 	});
 
@@ -451,7 +447,7 @@ describe("Antigravity usage", () => {
 			loadCodeAssist: { currentTier: { name: "Free" } },
 		});
 		const output = formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey));
-		expect(output).toContain("claude [                    ] left 0%");
+		expect(output).toContain("claude             0% left  ░░░░░░░░░░");
 		expect(output).toContain("Aggregate quota unavailable: Account quota HTTP 403");
 		expect(output).toContain("Antigravity (Free)");
 		expect(output).not.toContain("private-token");
@@ -466,7 +462,7 @@ describe("Antigravity usage", () => {
 			loadCodeAssist: new Response("private-token", { status: 401 }),
 		});
 		const output = formatAccountUsage(await fetchAccountUsage("antigravity", antigravityKey));
-		expect(output).toContain("pool [::::                ] left 20%");
+		expect(output).toContain("pool              20% left  ██░░░░░░░░");
 		expect(output).toContain("Model quota unavailable");
 		expect(output).not.toContain("private-token");
 	});
@@ -572,7 +568,7 @@ describe("Antigravity usage", () => {
 			},
 		} as unknown as Parameters<typeof command.handler>[1]);
 		expect(getApiKeyForProvider).toHaveBeenCalledWith("antigravity");
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("gemini [::::::::::          ] left 50%"), "info");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("gemini            50% left  █████░░░░░"), "info");
 	});
 
 	it.each([
@@ -607,7 +603,7 @@ describe("Antigravity usage", () => {
 			},
 		} as unknown as Parameters<typeof command.handler>[1]);
 		expect(getApiKeyForProvider).toHaveBeenCalledWith(provider);
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage [:::::::::::::::     ] left 75%"), "info");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage           75% left  ████████░░"), "info");
 		expect(request).toHaveBeenCalledTimes(1);
 	});
 

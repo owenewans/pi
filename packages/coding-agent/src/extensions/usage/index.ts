@@ -155,32 +155,59 @@ function record(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
-/** Renders account quotas using owencfg's compact ASCII bar. */
-export function formatAccountUsage(usage: AccountUsage | AntigravityUsage): string {
-	if ("groups" in usage) {
-		return [
-			usage.plan ? `Antigravity (${usage.plan})` : "Antigravity",
-			"Shared quota pools; model quotas are not independent budgets.",
-			...usage.groups.map(({ label, quota }) => formatQuota(label, quota)),
-			...usage.notes,
-			...(usage.groups.length ? [] : ["Quota: unavailable (not reported by API)"]),
-		].join("\n");
-	}
-	return [
-		formatQuota("Usage", usage),
-		formatQuota("Weekly", usage.weekly),
-		formatQuota(usage.monthlyKind === "extra" ? "Monthly extra" : "Monthly", usage.monthly),
-	].join("\n");
+function formatRemainingTime(resetsAt: number | undefined): string {
+	if (resetsAt === undefined) return "";
+	const minutes = Math.max(0, Math.floor((resetsAt - Date.now()) / 60_000));
+	if (minutes <= 0) return "resets now";
+	if (minutes < 60) return `resets in ${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const mins = minutes % 60;
+	if (hours < 24) return mins > 0 ? `resets in ${hours}h ${mins}m` : `resets in ${hours}h`;
+	const days = Math.floor(hours / 24);
+	const remHours = hours % 24;
+	return remHours > 0 ? `resets in ${days}d ${remHours}h` : `resets in ${days}d`;
 }
 
-function formatQuota(label: string, quota: UsageQuota | undefined): string {
-	if (!quota) return `${label}: unavailable (not reported by API)`;
-	const blocks = Math.round(quota.remaining / 5);
-	const bar = `${label} [${":".repeat(blocks)}${" ".repeat(20 - blocks)}] left ${quota.remaining.toFixed(0)}%`;
-	if (quota.resetsAt === undefined) return `${bar}\nResets: unknown`;
-	const minutes = Math.max(0, Math.floor((quota.resetsAt - Date.now()) / 60_000));
-	const reset = new Date(quota.resetsAt).toISOString().replace("T", " ").slice(0, 16);
-	return `${bar}\nResets: ${reset} UTC in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+function formatProgressBar(remaining: number, width = 10): string {
+	const filled = Math.max(0, Math.min(width, Math.round((remaining / 100) * width)));
+	return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
+function formatQuotaLine(label: string, quota: UsageQuota | undefined, labelWidth = 18): string {
+	if (!quota) return `  ${label}: unavailable (not reported by API)`;
+	const name = label.padEnd(labelWidth);
+	const pct = `${Math.round(quota.remaining)}% left`.padStart(9);
+	const bar = formatProgressBar(quota.remaining);
+	const reset = formatRemainingTime(quota.resetsAt);
+	return reset ? `  ${name} ${pct}  ${bar}  ${reset}` : `  ${name} ${pct}  ${bar}`;
+}
+
+/** Renders account quotas using a clean, compact Pi-style layout. */
+export function formatAccountUsage(usage: AccountUsage | AntigravityUsage): string {
+	if ("groups" in usage) {
+		const lines: string[] = [];
+		lines.push(usage.plan ? `Antigravity (${usage.plan})` : "Antigravity");
+		lines.push("Shared quota pools; model quotas are not independent budgets.");
+		if (usage.groups.length) {
+			const labelWidth = Math.max(16, ...usage.groups.map((g) => g.label.length));
+			for (const { label, quota } of usage.groups) {
+				lines.push(formatQuotaLine(label, quota, labelWidth));
+			}
+		} else {
+			lines.push("  Quota: unavailable (not reported by API)");
+		}
+		for (const note of usage.notes) {
+			lines.push(`  ${note}`);
+		}
+		return lines.join("\n");
+	}
+	const items: { label: string; quota: UsageQuota }[] = [];
+	items.push({ label: "Usage", quota: usage });
+	if (usage.weekly) items.push({ label: "Weekly", quota: usage.weekly });
+	if (usage.monthly)
+		items.push({ label: usage.monthlyKind === "extra" ? "Monthly extra" : "Monthly", quota: usage.monthly });
+	const labelWidth = Math.max(14, ...items.map((i) => i.label.length));
+	return items.map((item) => formatQuotaLine(item.label, item.quota, labelWidth)).join("\n");
 }
 
 export type AntigravityUsage = {
@@ -254,12 +281,20 @@ async function fetchAntigravityUsage(raw: string): Promise<AntigravityUsage> {
 			for (const value of Array.isArray(buckets) ? buckets : []) {
 				const bucket = record(value);
 				if (!bucket) continue;
-				const label = [text(group?.displayName), text(bucket.displayName) ?? text(bucket.bucketId) ?? "Quota"]
-					.filter(Boolean)
-					.join(" / ");
+				const groupName = text(group?.displayName);
+				const bucketName = text(bucket.displayName) ?? text(bucket.bucketId);
 				const window = text(bucket.window);
+				let label = "Quota";
+				if (groupName && bucketName && bucketName.includes("Limit Remaining") && window) {
+					const cleanGroup = groupName.replace(/ Models$/i, "").replace(/Claude and GPT models/i, "Claude & GPT");
+					label = `${cleanGroup} (${window})`;
+				} else {
+					const parts = [groupName, bucketName ?? "Quota"].filter((p): p is string => Boolean(p));
+					label = parts.length > 1 && parts[0] === parts[1] ? parts[0] : parts.join(" / ");
+					if (window && !label.includes(`(${window})`)) label = `${label} (${window})`;
+				}
 				usage.groups.push({
-					label: window ? `${label} (${window})` : label,
+					label: label || "Quota",
 					quota: fractionQuota(bucket),
 				});
 			}
@@ -267,12 +302,23 @@ async function fetchAntigravityUsage(raw: string): Promise<AntigravityUsage> {
 	} else usage.notes.push(`Aggregate quota unavailable: ${summary.reason.message}`);
 	if (models.status === "fulfilled") {
 		const catalog = record(record(models.value)?.models);
+		const existingFractions = new Set(
+			usage.groups.map((g) => g.quota?.remaining).filter((r): r is number => typeof r === "number"),
+		);
+		const seenModels = new Set<string>();
 		for (const [id, value] of Object.entries(catalog ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
 			const model = record(value);
 			if (!model || model.isInternal === true || id.startsWith("chat_")) continue;
+			const quota = fractionQuota(record(model.quotaInfo));
+			if (usage.groups.length > 0 && quota && existingFractions.has(quota.remaining)) continue;
+			const clean = id
+				.replace(/-(?:low|medium|high|tiered|disabled|thinking)$/, "")
+				.replace(/^gemini-3-flash-agent$/, "gemini-3.5-flash");
+			if (seenModels.has(clean)) continue;
+			seenModels.add(clean);
 			usage.groups.push({
-				label: id,
-				quota: fractionQuota(record(model.quotaInfo)),
+				label: clean,
+				quota,
 			});
 		}
 	} else usage.notes.push(`Model quota unavailable: ${models.reason.message}`);

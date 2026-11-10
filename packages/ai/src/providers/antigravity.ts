@@ -24,12 +24,14 @@ function runtimeId(id: string): boolean {
 // baseline limits from pi-antigravity; attribution in antigravity-client.ts.
 function baseline(baseUrl: string): NativeModel[] {
 	return [
-		["gemini-3.1-pro-low", "Gemini 3.1 Pro Low", 1048576, 65535, true],
-		["gemini-pro-agent", "Gemini Pro Agent", 1048576, 65535, true],
-		["gemini-3.8-flash-low", "Gemini 3.8 Flash Low", 1048576, 65536, true],
+		["gemini-3.1-pro", "Gemini 3.1 Pro", 1048576, 65535, true],
+		["gemini-3.8-flash", "Gemini 3.8 Flash", 1048576, 65536, true],
 		["claude-sonnet-4-6", "Claude Sonnet 4.6", 200000, 64000, true],
-		["claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", 250000, 64000, true],
-		["gpt-oss-120b-medium", "GPT-OSS 120B Medium", 131072, 32768, false],
+		["claude-opus-4-6", "Claude Opus 4.6", 250000, 64000, true],
+		["gpt-oss-120b", "GPT-OSS 120B", 131072, 32768, false],
+		["gemini-4-argon", "Gemini 4 Argon", 1048576, 65536, true],
+		["gemini-2.5-flash", "Gemini 2.5 Flash", 1048576, 65536, true],
+		["gemini-2.5-pro", "Gemini 2.5 Pro", 1048576, 65535, true],
 	].map(([id, name, contextWindow, maxTokens, images]) => ({
 		id: id as string,
 		name: name as string,
@@ -44,9 +46,40 @@ function baseline(baseUrl: string): NativeModel[] {
 	}));
 }
 
+function canonicalSpec(rawId: string): { id: string; name: string } | undefined {
+	const flashMatch = rawId.match(/^(gemini-3\.[678]-flash)(?:-(?:low|medium|high|tiered))?$/);
+	if (flashMatch) {
+		const base = flashMatch[1];
+		const version = base.slice("gemini-".length);
+		return { id: base, name: `Gemini ${version}` };
+	}
+	if (/^gemini-3\.5-flash(?:-(?:extra-low|low|agent))?$/.test(rawId) || rawId === "gemini-3-flash-agent") {
+		return { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash" };
+	}
+	if (/^gemini-3\.1-pro(?:-(?:low|high))?$/.test(rawId) || rawId === "gemini-pro-agent") {
+		return { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" };
+	}
+	if (/^claude-opus-4-6(?:-thinking)?$/.test(rawId)) {
+		return { id: "claude-opus-4-6", name: "Claude Opus 4.6" };
+	}
+	if (rawId === "claude-sonnet-4-6") {
+		return { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" };
+	}
+	if (/^gpt-oss-120b(?:-medium)?$/.test(rawId)) {
+		return { id: "gpt-oss-120b", name: "GPT-OSS 120B" };
+	}
+	if (/^gemini-4-argon(?:-disabled)?$/.test(rawId)) {
+		return { id: "gemini-4-argon", name: "Gemini 4 Argon" };
+	}
+	if (/^gemini-2\.5-flash(?:-thinking)?$/.test(rawId)) {
+		return { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" };
+	}
+	return undefined;
+}
+
 function catalog(data: unknown, defaults: NativeModel[], baseUrl: string): NativeModel[] {
 	if (!record(data) || !record(data.models)) throw new Error("Invalid Antigravity model catalog");
-	const models: NativeModel[] = [];
+	const modelsMap = new Map<string, NativeModel>();
 	for (const [id, info] of Object.entries(data.models)) {
 		if (
 			!runtimeId(id) ||
@@ -58,50 +91,40 @@ function catalog(data: unknown, defaults: NativeModel[], baseUrl: string): Nativ
 		)
 			continue;
 		const fallback = defaults.find((model) => model.id === id);
-		models.push({
-			id,
-			name: typeof info.displayName === "string" && info.displayName.trim() ? info.displayName : id,
-			provider: "antigravity",
-			api: "antigravity",
-			baseUrl,
-			cost: { ...ZERO_COST },
-			contextWindow: positive(info.maxTokens) ? info.maxTokens : (fallback?.contextWindow ?? 128000),
-			maxTokens: positive(info.maxOutputTokens) ? info.maxOutputTokens : (fallback?.maxTokens ?? 8192),
-			input: (typeof info.supportsImages === "boolean" ? info.supportsImages : fallback?.input.includes("image"))
-				? ["text", "image"]
-				: ["text"],
-			reasoning: typeof info.supportsThinking === "boolean" ? info.supportsThinking : (fallback?.reasoning ?? false),
-		});
-	}
-	if (!models.length) throw new Error("Antigravity returned no usable models");
-	return models;
-}
+		const canonical = canonicalSpec(id);
+		const modelId = canonical?.id ?? id;
+		const modelName =
+			canonical?.name ?? (typeof info.displayName === "string" && info.displayName.trim() ? info.displayName : id);
+		const contextWindow = positive(info.maxTokens) ? info.maxTokens : (fallback?.contextWindow ?? 128000);
+		const maxTokens = positive(info.maxOutputTokens) ? info.maxOutputTokens : (fallback?.maxTokens ?? 8192);
+		const supportsImages =
+			(typeof info.supportsImages === "boolean" ? info.supportsImages : fallback?.input.includes("image")) ?? false;
+		const supportsThinking =
+			(typeof info.supportsThinking === "boolean" ? info.supportsThinking : fallback?.reasoning) ?? true;
 
-function withAliases(models: NativeModel[]): NativeModel[] {
-	const aliases: Record<string, string[]> = {
-		"gemini-3.8-flash": ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high"],
-		"gemini-3.7-flash": ["gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"],
-		"gemini-3.6-flash": ["gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high"],
-		"gemini-3.5-flash": ["gemini-3.5-flash-extra-low", "gemini-3.5-flash-low", "gemini-3-flash-agent"],
-		"gemini-3.1-pro": ["gemini-3.1-pro-low", "gemini-pro-agent"],
-		"claude-opus-4-6": ["claude-opus-4-6-thinking"],
-		"gpt-oss-120b": ["gpt-oss-120b-medium"],
-	};
-	const result = [...models];
-	for (const [alias, ids] of Object.entries(aliases)) {
-		if (models.some((model) => model.id === alias)) continue;
-		const variants = models.filter((model) => ids.includes(model.id));
-		const first = variants[0];
-		if (!first) continue;
-		result.push({
-			...first,
-			id: alias,
-			name: alias,
-			contextWindow: Math.min(...variants.map((model) => model.contextWindow)),
-			maxTokens: Math.min(...variants.map((model) => model.maxTokens)),
-		});
+		const existing = modelsMap.get(modelId);
+		if (existing) {
+			existing.contextWindow = Math.max(existing.contextWindow, contextWindow);
+			existing.maxTokens = Math.max(existing.maxTokens, maxTokens);
+			if (supportsImages && !existing.input.includes("image")) existing.input.push("image");
+			if (supportsThinking) existing.reasoning = true;
+		} else {
+			modelsMap.set(modelId, {
+				id: modelId,
+				name: modelName,
+				provider: "antigravity",
+				api: "antigravity",
+				baseUrl,
+				cost: { ...ZERO_COST },
+				contextWindow,
+				maxTokens,
+				input: supportsImages ? ["text", "image"] : ["text"],
+				reasoning: supportsThinking,
+			});
+		}
 	}
-	return result;
+	if (!modelsMap.size) throw new Error("Antigravity returned no usable models");
+	return Array.from(modelsMap.values());
 }
 
 function restore(value: unknown, baseUrl: string): NativeModel[] | undefined {
@@ -160,7 +183,7 @@ export function antigravityProvider(): Provider<"antigravity"> {
 				load: loadAntigravityOAuth,
 			}),
 		},
-		getModels: () => withAliases(dynamicModels ?? defaults),
+		getModels: () => dynamicModels ?? defaults,
 		refreshModels: async (context) => {
 			if (context.signal.aborted) return;
 			const restored = restore(context.stored?.models, baseUrl);

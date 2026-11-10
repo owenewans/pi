@@ -21,7 +21,7 @@ export const defaultModelPerProvider: Partial<Record<KnownProvider, string>> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-5-5",
 	"ant-ling": "Ring-2.6-1T",
 	anthropic: "claude-opus-5-5",
-	antigravity: "gemini-3.1-pro-low",
+	antigravity: "gemini-3.1-pro",
 	openai: "gpt-6.1-sol",
 	azure: "gpt-6.1-sol",
 	"openai-codex": "gpt-6.1-sol",

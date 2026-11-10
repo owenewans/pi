@@ -68,6 +68,8 @@ export function resolveAntigravityModel(id: string, effort: AntigravityOptions["
 	if (id === "gemini-3.1-pro") return high ? "gemini-pro-agent" : "gemini-3.1-pro-low";
 	if (id === "claude-opus-4-6") return "claude-opus-4-6-thinking";
 	if (id === "gpt-oss-120b") return "gpt-oss-120b-medium";
+	if (id === "gemini-4-argon") return "gemini-4-argon-disabled";
+	if (id === "gemini-2.5-flash") return effort && effort !== "off" ? "gemini-2.5-flash-thinking" : "gemini-2.5-flash";
 	return id;
 }
 

@@ -76,16 +76,14 @@ describe("Antigravity provider", () => {
 		expect(fetch).not.toHaveBeenCalled();
 		expect(provider.auth?.oauth?.isSubscription).toBe(true);
 		expect(provider.getModels().map((model) => model.id)).toEqual([
-			"gemini-3.1-pro-low",
-			"gemini-pro-agent",
-			"gemini-3.8-flash-low",
-			"claude-sonnet-4-6",
-			"claude-opus-4-6-thinking",
-			"gpt-oss-120b-medium",
-			"gemini-3.8-flash",
 			"gemini-3.1-pro",
+			"gemini-3.8-flash",
+			"claude-sonnet-4-6",
 			"claude-opus-4-6",
 			"gpt-oss-120b",
+			"gemini-4-argon",
+			"gemini-2.5-flash",
+			"gemini-2.5-pro",
 		]);
 		for (const model of provider.getModels()) {
 			expect(model).toMatchObject({
@@ -142,7 +140,7 @@ describe("Antigravity provider", () => {
 				stored: { models } as unknown as ModelsStoreEntry,
 				allowNetwork: false,
 			});
-			expect(target.getModels()).toHaveLength(10);
+			expect(target.getModels()).toHaveLength(8);
 		}
 	});
 
@@ -209,7 +207,7 @@ describe("Antigravity provider", () => {
 		const provider = antigravityProvider();
 		const run = harness(provider);
 		await run.refresh({ publish: async () => false });
-		expect(provider.getModels()).toHaveLength(10);
+		expect(provider.getModels()).toHaveLength(8);
 		const controller = new AbortController();
 		controller.abort();
 		fetch.mockClear();
@@ -222,7 +220,7 @@ describe("Antigravity provider", () => {
 		});
 		await expect(run.refresh({ signal: active.signal })).rejects.toBeDefined();
 		expect(run.publications).toEqual([]);
-		expect(provider.getModels()).toHaveLength(10);
+		expect(provider.getModels()).toHaveLength(8);
 	});
 });
 
