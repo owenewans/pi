@@ -506,7 +506,12 @@ export const stream: StreamFunction<"antigravity", AntigravityOptions> = (model,
 					if (next.done) break;
 					text += decoder.decode(next.value, { stream: true });
 				}
-				throw new Error(`Antigravity HTTP ${response.status}: ${text}`);
+				let detail = text.trim();
+				try {
+					const parsed = JSON.parse(detail) as { error?: { message?: string } };
+					if (parsed?.error?.message) detail = parsed.error.message;
+				} catch {}
+				throw new Error(`Antigravity HTTP ${response.status}: ${detail}`);
 			}
 			events.push({ type: "start", partial: output });
 			let current: TextContent | ThinkingContent | undefined;

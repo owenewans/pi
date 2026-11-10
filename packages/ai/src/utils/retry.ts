@@ -32,6 +32,10 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	// Zhipu/Z.ai (open.bigmodel.cn) error code 1308: the plan's usage limit is
 	// reached, sent as HTTP 429. It resets after hours, not seconds (#11537).
 	'"code"\\s*:\\s*"?1308(?![0-9])',
+
+	// Antigravity (Google CloudCode) individual quota exhaustion. Resets in hours, not transient.
+	"Individual quota reached",
+	"QUOTA_EXHAUSTED",
 ]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([

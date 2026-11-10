@@ -138,6 +138,12 @@ describe("provider retry classification", () => {
 		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
 	});
 
+	it("keeps Antigravity individual quota reached non-retryable", () => {
+		const errorMessage =
+			"Antigravity HTTP 429: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h12m21s.";
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
 	it.each([
 		"subscription_sharing_usage_unavailable: Usage cannot be checked.",
 		"subscription_sharing_user_unavailable: User cannot be loaded.",
