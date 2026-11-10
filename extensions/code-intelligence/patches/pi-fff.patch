@@ -1,6 +1,17 @@
 --- a/node_modules/@ff-labs/pi-fff/src/index.ts
 +++ b/node_modules/@ff-labs/pi-fff/src/index.ts
-@@ -998,7 +998,6 @@
+@@ -818,7 +818,9 @@
+       // instead of letting the native refusal surface as an error (issue #857).
+       const optOut = scanOptOutReason(activeCwd);
+       if (optOut) {
+-        ctx.ui.notify(optOut, "warning");
++        if (warnOnHomeDirScan) {
++          ctx.ui.notify(optOut, "warning");
++        }
+         return;
+       }
+ 
+@@ -998,7 +1000,6 @@
        `${names.grep}: prefer bare identifiers as patterns. Literal queries are most efficient.`,
        `${names.grep}: use path for include ('src/', '*.ts') and exclude for noise ('test/,*.min.js').`,
        `${names.grep}: caseSensitive: true when you need exact case (smart-case otherwise).`,
@@ -8,7 +19,7 @@
      ],
      parameters: grepSchema,
  
-@@ -1158,7 +1157,7 @@
+@@ -1158,7 +1159,7 @@
    const findSchema = Type.Object({
      pattern: Type.String({
        description:

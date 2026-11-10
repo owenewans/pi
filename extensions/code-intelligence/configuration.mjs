@@ -49,7 +49,12 @@ export function configuration({ go = join(homedir(), "go/bin/gopls"), rust = joi
 			},
 		},
 		fovea: { sync: { mode: "disabled" }, tools: { grepMode: "off", defaultBudget: 800 } },
-		fff: { mode: "tools-only" },
+		fff: {
+			mode: "tools-only",
+			enableHomeDirScanning: false,
+			enableFsRootScanning: false,
+			warnOnHomeDirScan: false,
+		},
 		autoformat: {
 			commandTimeoutMs: 45000,
 			formatterOutput: { onFailure: "both", maxBytes: 12000, maxLines: 100 },
