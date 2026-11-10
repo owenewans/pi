@@ -50,7 +50,10 @@ function canonicalSpec(rawId: string): { id: string; name: string } | undefined 
 	const flashMatch = rawId.match(/^(gemini-3\.[678]-flash)(?:-(?:low|medium|high|tiered))?$/);
 	if (flashMatch) {
 		const base = flashMatch[1];
-		const version = base.slice("gemini-".length);
+		const version = base
+			.slice("gemini-".length)
+			.replace("-", " ")
+			.replace(/\b\w/g, (c) => c.toUpperCase());
 		return { id: base, name: `Gemini ${version}` };
 	}
 	if (/^gemini-3\.5-flash(?:-(?:extra-low|low|agent))?$/.test(rawId) || rawId === "gemini-3-flash-agent") {
@@ -73,6 +76,21 @@ function canonicalSpec(rawId: string): { id: string; name: string } | undefined 
 	}
 	if (/^gemini-2\.5-flash(?:-thinking)?$/.test(rawId)) {
 		return { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" };
+	}
+	if (rawId === "gemini-2.5-flash-lite") {
+		return { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" };
+	}
+	if (rawId === "gemini-3.5-flash-lite") {
+		return { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite" };
+	}
+	if (rawId === "gemini-3.1-flash-lite") {
+		return { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash Lite" };
+	}
+	if (rawId === "gemini-3-flash") {
+		return { id: "gemini-3-flash", name: "Gemini 3 Flash" };
+	}
+	if (rawId === "gemini-2.5-pro") {
+		return { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" };
 	}
 	return undefined;
 }
