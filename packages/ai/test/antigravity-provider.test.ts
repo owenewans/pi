@@ -219,7 +219,7 @@ describe("Antigravity provider", () => {
 		expect(provider.getModels()).toHaveLength(4);
 	});
 
-	it("uses agentModelSorts, skips disabled models, and extracts variant metadata dynamically", async () => {
+	it("includes all non-internal chat models and extracts variant metadata dynamically", async () => {
 		const livePayload = {
 			models: {
 				"future-model-high": {
@@ -264,11 +264,6 @@ describe("Antigravity provider", () => {
 					maxTokens: 1048576,
 					maxOutputTokens: 65536,
 				},
-				"internal-sonar": {
-					supportsThinking: true,
-					maxTokens: 1048576,
-					maxOutputTokens: 65536,
-				},
 				"future-experimental-sonar": {
 					recommended: true,
 					supportsImages: true,
@@ -281,21 +276,14 @@ describe("Antigravity provider", () => {
 					apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
 					modelProvider: "MODEL_PROVIDER_GOOGLE",
 				},
-				"future-tiered": {
-					recommended: true,
-					maxTokens: 1048576,
-					maxOutputTokens: 65536,
-				},
-				"legacy-broken": {
-					displayName: "Legacy Broken",
-					maxTokens: 1048576,
+				"future-image": {
+					displayName: "Future Image",
+					maxTokens: 65536,
 					maxOutputTokens: 65536,
 				},
 			},
 			defaultAgentModelId: "future-model-high",
-			tieredModelIds: {
-				flash: ["future-tiered"],
-			},
+			imageGenerationModelIds: ["future-image"],
 			agentModelSorts: [
 				{
 					displayName: "Recommended",
@@ -315,6 +303,7 @@ describe("Antigravity provider", () => {
 		expect(models.map((m) => ({ id: m.id, name: m.name }))).toEqual([
 			{ id: "future-model", name: "Future Model" },
 			{ id: "future-claude", name: "Future Claude" },
+			{ id: "future-disabled", name: "Future Disabled" },
 			{ id: "future-experimental-sonar", name: "Future Experimental Sonar" },
 		]);
 		expect(models[0].thinkingLevelMap).toEqual({

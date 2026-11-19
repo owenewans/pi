@@ -117,33 +117,18 @@ function candidateModelIds(data: Record<string, unknown>, rawModels: Record<stri
 			}
 		}
 	}
-	const hasAgentSorts = ids.length > 0;
 	add(data.defaultAgentModelId);
-	for (const [id, info] of Object.entries(rawModels)) {
-		if (!hasAgentSorts || (record(info) && info.recommended === true && info.disabled !== true)) {
-			add(id);
-		}
-	}
+	for (const id of Object.keys(rawModels)) add(id);
 	return ids;
 }
 
-function excludedModelIds(data: Record<string, unknown>, rawModels: Record<string, unknown>): Set<string> {
+function excludedModelIds(data: Record<string, unknown>): Set<string> {
 	const excluded = new Set<string>();
 	for (const key of ["imageGenerationModelIds", "audioTranscriptionModelIds"] as const) {
 		const list = data[key];
 		if (!Array.isArray(list)) continue;
 		for (const id of list) {
 			if (typeof id === "string") excluded.add(id);
-		}
-	}
-	if (record(data.tieredModelIds)) {
-		for (const list of Object.values(data.tieredModelIds)) {
-			if (!Array.isArray(list)) continue;
-			for (const id of list) {
-				if (typeof id !== "string") continue;
-				const info = rawModels[id];
-				if (record(info) && !nonEmptyString(info.displayName)) excluded.add(id);
-			}
 		}
 	}
 	return excluded;
@@ -191,7 +176,7 @@ function catalog(data: unknown, defaults: NativeModel[], baseUrl: string): Nativ
 	if (!record(data) || !record(data.models)) throw new Error("Invalid Antigravity model catalog");
 	const rawModels = data.models;
 	const candidateIds = candidateModelIds(data, rawModels);
-	const excluded = excludedModelIds(data, rawModels);
+	const excluded = excludedModelIds(data);
 
 	interface Group {
 		model: NativeModel;
@@ -205,8 +190,6 @@ function catalog(data: unknown, defaults: NativeModel[], baseUrl: string): Nativ
 			!runtimeId(id) ||
 			!record(info) ||
 			excluded.has(id) ||
-			info.disabled === true ||
-			(typeof info.tagTitle === "string" && info.tagTitle.trim().toLowerCase() === "unavailable") ||
 			info.isInternal === true ||
 			info.apiProvider === "API_PROVIDER_INTERNAL" ||
 			info.isImageOnly === true ||
@@ -345,7 +328,7 @@ function restore(value: unknown, baseUrl: string): NativeModel[] | undefined {
 
 async function fingerprint(value: string): Promise<string> {
 	const hash = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-	return `antigravity-v3:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+	return `antigravity-v4:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export function antigravityProvider(): Provider<"antigravity"> {
