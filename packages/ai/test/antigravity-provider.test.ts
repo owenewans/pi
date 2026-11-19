@@ -269,6 +269,23 @@ describe("Antigravity provider", () => {
 					maxTokens: 1048576,
 					maxOutputTokens: 65536,
 				},
+				"future-experimental-sonar": {
+					recommended: true,
+					supportsImages: true,
+					supportsThinking: true,
+					minThinkingBudget: 32,
+					thinkingLevel: 1,
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+					model: "MODEL_PLACEHOLDER_M904",
+					apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
+					modelProvider: "MODEL_PROVIDER_GOOGLE",
+				},
+				"future-tiered": {
+					recommended: true,
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+				},
 				"legacy-broken": {
 					displayName: "Legacy Broken",
 					maxTokens: 1048576,
@@ -276,6 +293,9 @@ describe("Antigravity provider", () => {
 				},
 			},
 			defaultAgentModelId: "future-model-high",
+			tieredModelIds: {
+				flash: ["future-tiered"],
+			},
 			agentModelSorts: [
 				{
 					displayName: "Recommended",
@@ -295,6 +315,7 @@ describe("Antigravity provider", () => {
 		expect(models.map((m) => ({ id: m.id, name: m.name }))).toEqual([
 			{ id: "future-model", name: "Future Model" },
 			{ id: "future-claude", name: "Future Claude" },
+			{ id: "future-experimental-sonar", name: "Future Experimental Sonar" },
 		]);
 		expect(models[0].thinkingLevelMap).toEqual({
 			off: "future-model-low",

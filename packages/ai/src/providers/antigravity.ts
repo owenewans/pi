@@ -57,6 +57,14 @@ interface ParsedVariant {
 	meta: AntigravityRuntimeVariant;
 }
 
+function formatModelName(id: string): string {
+	return id
+		.split("-")
+		.filter(Boolean)
+		.map((part) => (/^\d+(?:\.\d+)*$/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1)))
+		.join(" ");
+}
+
 function parseVariant(id: string, info: Record<string, unknown>): ParsedVariant {
 	const rawDisplay = nonEmptyString(info.displayName);
 	const displayMatch = rawDisplay?.match(/^(.*?)\s*\((Extra Low|Minimal|Low|Medium|High|Thinking)\)$/i);
@@ -64,7 +72,7 @@ function parseVariant(id: string, info: Record<string, unknown>): ParsedVariant 
 	const hasThinkingLevel = positive(info.thinkingLevel);
 	const shouldCollapse = Boolean(displayMatch || hasThinkingLevel);
 	const baseId = shouldCollapse && idMatch ? idMatch[1] : id;
-	const baseName = displayMatch ? displayMatch[1].trim() : (rawDisplay ?? baseId);
+	const baseName = displayMatch ? displayMatch[1].trim() : (rawDisplay ?? formatModelName(baseId));
 	const tag = idMatch?.[2] ?? displayMatch?.[2]?.toLowerCase().replace(/\s+/g, "-");
 
 	let slot: VariantSlot = "default";
@@ -91,7 +99,7 @@ function parseVariant(id: string, info: Record<string, unknown>): ParsedVariant 
 	return { baseId, baseName, runtimeId: id, slot, meta };
 }
 
-function agentModelIds(data: Record<string, unknown>): string[] | undefined {
+function candidateModelIds(data: Record<string, unknown>, rawModels: Record<string, unknown>): string[] {
 	const ids: string[] = [];
 	const seen = new Set<string>();
 	const add = (value: unknown) => {
@@ -109,18 +117,33 @@ function agentModelIds(data: Record<string, unknown>): string[] | undefined {
 			}
 		}
 	}
-	if (!ids.length) return undefined;
+	const hasAgentSorts = ids.length > 0;
 	add(data.defaultAgentModelId);
+	for (const [id, info] of Object.entries(rawModels)) {
+		if (!hasAgentSorts || (record(info) && info.recommended === true && info.disabled !== true)) {
+			add(id);
+		}
+	}
 	return ids;
 }
 
-function excludedModelIds(data: Record<string, unknown>): Set<string> {
+function excludedModelIds(data: Record<string, unknown>, rawModels: Record<string, unknown>): Set<string> {
 	const excluded = new Set<string>();
 	for (const key of ["imageGenerationModelIds", "audioTranscriptionModelIds"] as const) {
 		const list = data[key];
 		if (!Array.isArray(list)) continue;
 		for (const id of list) {
 			if (typeof id === "string") excluded.add(id);
+		}
+	}
+	if (record(data.tieredModelIds)) {
+		for (const list of Object.values(data.tieredModelIds)) {
+			if (!Array.isArray(list)) continue;
+			for (const id of list) {
+				if (typeof id !== "string") continue;
+				const info = rawModels[id];
+				if (record(info) && !nonEmptyString(info.displayName)) excluded.add(id);
+			}
 		}
 	}
 	return excluded;
@@ -167,8 +190,8 @@ function buildCompat(variants: ParsedVariant[]): AntigravityCompat | undefined {
 function catalog(data: unknown, defaults: NativeModel[], baseUrl: string): NativeModel[] {
 	if (!record(data) || !record(data.models)) throw new Error("Invalid Antigravity model catalog");
 	const rawModels = data.models;
-	const candidateIds = agentModelIds(data) ?? Object.keys(rawModels);
-	const excluded = excludedModelIds(data);
+	const candidateIds = candidateModelIds(data, rawModels);
+	const excluded = excludedModelIds(data, rawModels);
 
 	interface Group {
 		model: NativeModel;
@@ -322,7 +345,7 @@ function restore(value: unknown, baseUrl: string): NativeModel[] | undefined {
 
 async function fingerprint(value: string): Promise<string> {
 	const hash = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-	return `antigravity-v2:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+	return `antigravity-v3:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export function antigravityProvider(): Provider<"antigravity"> {
