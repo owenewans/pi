@@ -344,7 +344,7 @@ const metafiles = [
 	codemodeWorkerResult.metafile,
 ];
 validateExternalImports(metafiles);
-const cliLauncher = `#!/usr/bin/env node
+const cliLauncher = `#!/usr/bin/env bun
 import { createRequire, enableCompileCache } from "node:module";
 
 enableCompileCache();

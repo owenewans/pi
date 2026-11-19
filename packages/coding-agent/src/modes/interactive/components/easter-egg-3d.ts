@@ -129,14 +129,10 @@ function createModel(
 	};
 }
 
-const CORAL: Rgb = [228, 138, 122];
-const BLUE: Rgb = [79, 142, 179];
-const YELLOW: Rgb = [234, 182, 93];
-const PI_LOGO_PIXELS = ["ccc.", "b.c.", "bb.y", "b..y"];
-const PI_LOGO_COLORS: Record<string, Rgb> = { c: CORAL, b: BLUE, y: YELLOW };
+const PI_LOGO_PIXELS = ["xxx.", "x.x.", "xx.x", "x..x"];
 
-function piLogoModel(origin: { column: number; row: number }): Model {
-	return createModel(4, 4, (column, row) => PI_LOGO_COLORS[PI_LOGO_PIXELS[row]![column]!], {
+function piLogoModel(origin: { column: number; row: number }, color: Rgb): Model {
+	return createModel(4, 4, (column, row) => (PI_LOGO_PIXELS[row]![column]! === "x" ? color : undefined), {
 		cameraDistance: 10,
 		widthShare: 0.35,
 		puzzleMoves: (random) => (random < 0.4 ? 2 : 1),
@@ -860,7 +856,9 @@ export async function playEasterEgg3d(tui: TUI, screen: readonly string[], egg: 
 		return;
 	}
 	const model =
-		egg.kind === "armin" ? arminModel(toRgb(theme.colors.accent)) : piLogoModel({ column: egg.column, row: egg.row });
+		egg.kind === "armin"
+			? arminModel(toRgb(theme.colors.accent))
+			: piLogoModel({ column: egg.column, row: egg.row }, colors.foreground);
 	const animation = new EasterEgg3dAnimation(tui, screen, model, colors, () => {
 		playing = false;
 		overlay.hide();

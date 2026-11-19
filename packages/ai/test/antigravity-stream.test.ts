@@ -609,3 +609,55 @@ it("replays signed tool history from npm Antigravity sessions", async () => {
 	expect(parts[0].functionCall.name).toBe("inspect");
 	expect(parts[0].thoughtSignature).toBe("dG9vbA==");
 });
+
+it("uses dynamic thinkingLevelMap and compat metadata without hardcoded model tables", async () => {
+	const next = mockFetch([candidate([{ text: "done" }], "STOP")]);
+	const dynamicModel: Model<"antigravity"> = {
+		...model,
+		id: "future-claude",
+		name: "Future Claude",
+		thinkingLevelMap: {
+			off: "future-claude-thinking",
+			minimal: "future-claude-thinking",
+			low: "future-claude-thinking",
+			medium: "future-claude-thinking",
+			high: "future-claude-thinking",
+		},
+		compat: {
+			apiProvider: "API_PROVIDER_ANTHROPIC_VERTEX",
+			modelProvider: "MODEL_PROVIDER_ANTHROPIC",
+			variants: {
+				"future-claude-thinking": {
+					modelEnum: "MODEL_PLACEHOLDER_M999",
+					thinkingBudget: 2048,
+					apiProvider: "API_PROVIDER_ANTHROPIC_VERTEX",
+					modelProvider: "MODEL_PROVIDER_ANTHROPIC",
+				},
+			},
+		},
+	};
+	const withTools = normalizeContext({
+		messages: [...context.messages],
+		tools: [
+			{
+				name: "inspect",
+				description: "Inspect",
+				parameters: Type.Object({ path: Type.Optional(Type.Union([Type.String(), Type.Null()])) }),
+			},
+		],
+	});
+	const result = await stream(dynamicModel, withTools, { apiKey, fetch: next.fetch, reasoning: "high" }).result();
+	expect(result.stopReason).toBe("stop");
+	const payload = JSON.parse(String(next.fetch.mock.calls[0][1]?.body));
+	expect(payload.model).toBe("future-claude-thinking");
+	expect(payload.request.labels.model_enum).toBe("MODEL_PLACEHOLDER_M999");
+	expect(payload.request.labels.used_claude).toBe("true");
+	expect(payload.request.labels.used_non_gemini_model).toBe("true");
+	expect(payload.request.generationConfig.thinkingConfig).toEqual({
+		includeThoughts: true,
+		thinkingBudget: 2048,
+	});
+	const declaration = payload.request.tools[0].functionDeclarations[0];
+	expect(declaration.parameters).toBeDefined();
+	expect(declaration.parametersJsonSchema).toBeUndefined();
+});

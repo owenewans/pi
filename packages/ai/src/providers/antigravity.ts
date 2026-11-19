@@ -2,12 +2,13 @@ import { antigravityApi } from "../api/antigravity.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadAntigravityOAuth } from "../auth/oauth/load.ts";
 import { isModelType, type Provider } from "../models.ts";
-import type { Model } from "../types.ts";
+import type { AntigravityCompat, AntigravityRuntimeVariant, Model, ThinkingLevelMap } from "../types.ts";
 import { antigravityEndpoint, antigravityRequest, parseAntigravityAuth } from "./antigravity-client.ts";
 
 const TTL = 4 * 60 * 60 * 1000;
 type NativeModel = Model<"antigravity">;
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+const THINKING_MAP_KEYS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -17,6 +18,10 @@ function positive(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function runtimeId(id: string): boolean {
 	return /^[a-z0-9][a-z0-9_.-]*$/i.test(id) && !/^(MODEL_|chat_|tab_)/i.test(id) && !/image/i.test(id);
 }
@@ -24,14 +29,10 @@ function runtimeId(id: string): boolean {
 // baseline limits from pi-antigravity; attribution in antigravity-client.ts.
 function baseline(baseUrl: string): NativeModel[] {
 	return [
-		["gemini-3.1-pro", "Gemini 3.1 Pro", 1048576, 65535, true],
 		["gemini-3.8-flash", "Gemini 3.8 Flash", 1048576, 65536, true],
-		["claude-sonnet-4-6", "Claude Sonnet 4.6", 200000, 64000, true],
+		["claude-sonnet-4-6", "Claude Sonnet 4.6", 250000, 64000, true],
 		["claude-opus-4-6", "Claude Opus 4.6", 250000, 64000, true],
 		["gpt-oss-120b", "GPT-OSS 120B", 131072, 32768, false],
-		["gemini-4-argon", "Gemini 4 Argon", 1048576, 65536, true],
-		["gemini-2.5-flash", "Gemini 2.5 Flash", 1048576, 65536, true],
-		["gemini-2.5-pro", "Gemini 2.5 Pro", 1048576, 65535, true],
 	].map(([id, name, contextWindow, maxTokens, images]) => ({
 		id: id as string,
 		name: name as string,
@@ -46,103 +47,236 @@ function baseline(baseUrl: string): NativeModel[] {
 	}));
 }
 
-function canonicalSpec(rawId: string): { id: string; name: string } | undefined {
-	const flashMatch = rawId.match(/^(gemini-3\.[678]-flash)(?:-(?:low|medium|high|tiered))?$/);
-	if (flashMatch) {
-		const base = flashMatch[1];
-		const version = base
-			.slice("gemini-".length)
-			.replace("-", " ")
-			.replace(/\b\w/g, (c) => c.toUpperCase());
-		return { id: base, name: `Gemini ${version}` };
+type VariantSlot = "minimal" | "low" | "medium" | "high" | "thinking" | "default";
+
+interface ParsedVariant {
+	baseId: string;
+	baseName: string;
+	runtimeId: string;
+	slot: VariantSlot;
+	meta: AntigravityRuntimeVariant;
+}
+
+function parseVariant(id: string, info: Record<string, unknown>): ParsedVariant {
+	const rawDisplay = nonEmptyString(info.displayName);
+	const displayMatch = rawDisplay?.match(/^(.*?)\s*\((Extra Low|Minimal|Low|Medium|High|Thinking)\)$/i);
+	const idMatch = id.match(/^(.*?)-(extra-low|minimal|low|medium|high|thinking)$/);
+	const hasThinkingLevel = positive(info.thinkingLevel);
+	const shouldCollapse = Boolean(displayMatch || hasThinkingLevel);
+	const baseId = shouldCollapse && idMatch ? idMatch[1] : id;
+	const baseName = displayMatch ? displayMatch[1].trim() : (rawDisplay ?? baseId);
+	const tag = idMatch?.[2] ?? displayMatch?.[2]?.toLowerCase().replace(/\s+/g, "-");
+
+	let slot: VariantSlot = "default";
+	if (info.thinkingLevel === 1) slot = "low";
+	else if (info.thinkingLevel === 2) slot = "medium";
+	else if (info.thinkingLevel === 3) slot = "high";
+	else if (tag === "extra-low" || tag === "minimal") slot = "minimal";
+	else if (tag === "low") slot = "low";
+	else if (tag === "medium") slot = "medium";
+	else if (tag === "high") slot = "high";
+	else if (tag === "thinking") slot = "thinking";
+
+	const meta: AntigravityRuntimeVariant = {};
+	const modelEnum = nonEmptyString(info.model);
+	if (modelEnum) meta.modelEnum = modelEnum;
+	if (positive(info.thinkingBudget)) meta.thinkingBudget = info.thinkingBudget;
+	if (positive(info.minThinkingBudget)) meta.minThinkingBudget = info.minThinkingBudget;
+	if (positive(info.thinkingLevel)) meta.thinkingLevel = info.thinkingLevel;
+	const apiProvider = nonEmptyString(info.apiProvider);
+	if (apiProvider) meta.apiProvider = apiProvider;
+	const modelProvider = nonEmptyString(info.modelProvider);
+	if (modelProvider) meta.modelProvider = modelProvider;
+
+	return { baseId, baseName, runtimeId: id, slot, meta };
+}
+
+function agentModelIds(data: Record<string, unknown>): string[] | undefined {
+	const ids: string[] = [];
+	const seen = new Set<string>();
+	const add = (value: unknown) => {
+		if (typeof value === "string" && value && !seen.has(value)) {
+			seen.add(value);
+			ids.push(value);
+		}
+	};
+	if (Array.isArray(data.agentModelSorts)) {
+		for (const sort of data.agentModelSorts) {
+			if (!record(sort) || !Array.isArray(sort.groups)) continue;
+			for (const group of sort.groups) {
+				if (!record(group) || !Array.isArray(group.modelIds)) continue;
+				for (const id of group.modelIds) add(id);
+			}
+		}
 	}
-	if (/^gemini-3\.5-flash(?:-(?:extra-low|low|agent))?$/.test(rawId) || rawId === "gemini-3-flash-agent") {
-		return { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash" };
+	if (!ids.length) return undefined;
+	add(data.defaultAgentModelId);
+	return ids;
+}
+
+function excludedModelIds(data: Record<string, unknown>): Set<string> {
+	const excluded = new Set<string>();
+	for (const key of ["imageGenerationModelIds", "audioTranscriptionModelIds"] as const) {
+		const list = data[key];
+		if (!Array.isArray(list)) continue;
+		for (const id of list) {
+			if (typeof id === "string") excluded.add(id);
+		}
 	}
-	if (/^gemini-3\.1-pro(?:-(?:low|high))?$/.test(rawId) || rawId === "gemini-pro-agent") {
-		return { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" };
+	return excluded;
+}
+
+function buildThinkingLevelMap(baseId: string, variants: ParsedVariant[]): ThinkingLevelMap | undefined {
+	if (variants.length === 1) {
+		const only = variants[0];
+		if (only.runtimeId === baseId) return undefined;
+		return {
+			off: only.runtimeId,
+			minimal: only.runtimeId,
+			low: only.runtimeId,
+			medium: only.runtimeId,
+			high: only.runtimeId,
+		};
 	}
-	if (/^claude-opus-4-6(?:-thinking)?$/.test(rawId)) {
-		return { id: "claude-opus-4-6", name: "Claude Opus 4.6" };
+	const bySlot = (slot: VariantSlot) => variants.find((entry) => entry.slot === slot)?.runtimeId;
+	const low = bySlot("low") ?? bySlot("minimal") ?? bySlot("default") ?? variants[0].runtimeId;
+	const minimal = bySlot("minimal") ?? low;
+	const medium = bySlot("medium") ?? bySlot("high") ?? low;
+	const high = bySlot("high") ?? bySlot("thinking") ?? medium;
+	const off = bySlot("default") ?? low;
+	return { off, minimal, low, medium, high };
+}
+
+function buildCompat(variants: ParsedVariant[]): AntigravityCompat | undefined {
+	const variantMap: Record<string, AntigravityRuntimeVariant> = {};
+	let apiProvider: string | undefined;
+	let modelProvider: string | undefined;
+	for (const entry of variants) {
+		apiProvider ??= entry.meta.apiProvider;
+		modelProvider ??= entry.meta.modelProvider;
+		if (Object.keys(entry.meta).length > 0) variantMap[entry.runtimeId] = entry.meta;
 	}
-	if (rawId === "claude-sonnet-4-6") {
-		return { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" };
-	}
-	if (/^gpt-oss-120b(?:-medium)?$/.test(rawId)) {
-		return { id: "gpt-oss-120b", name: "GPT-OSS 120B" };
-	}
-	if (/^gemini-4-argon(?:-disabled)?$/.test(rawId)) {
-		return { id: "gemini-4-argon", name: "Gemini 4 Argon" };
-	}
-	if (/^gemini-2\.5-flash(?:-thinking)?$/.test(rawId)) {
-		return { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" };
-	}
-	if (rawId === "gemini-2.5-flash-lite") {
-		return { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" };
-	}
-	if (rawId === "gemini-3.5-flash-lite") {
-		return { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite" };
-	}
-	if (rawId === "gemini-3.1-flash-lite") {
-		return { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash Lite" };
-	}
-	if (rawId === "gemini-3-flash") {
-		return { id: "gemini-3-flash", name: "Gemini 3 Flash" };
-	}
-	if (rawId === "gemini-2.5-pro") {
-		return { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" };
-	}
-	return undefined;
+	if (!apiProvider && !modelProvider && Object.keys(variantMap).length === 0) return undefined;
+	return {
+		...(apiProvider ? { apiProvider } : {}),
+		...(modelProvider ? { modelProvider } : {}),
+		...(Object.keys(variantMap).length > 0 ? { variants: variantMap } : {}),
+	};
 }
 
 function catalog(data: unknown, defaults: NativeModel[], baseUrl: string): NativeModel[] {
 	if (!record(data) || !record(data.models)) throw new Error("Invalid Antigravity model catalog");
-	const modelsMap = new Map<string, NativeModel>();
-	for (const [id, info] of Object.entries(data.models)) {
+	const rawModels = data.models;
+	const candidateIds = agentModelIds(data) ?? Object.keys(rawModels);
+	const excluded = excludedModelIds(data);
+
+	interface Group {
+		model: NativeModel;
+		variants: ParsedVariant[];
+	}
+	const groups = new Map<string, Group>();
+
+	for (const id of candidateIds) {
+		const info = rawModels[id];
 		if (
 			!runtimeId(id) ||
 			!record(info) ||
+			excluded.has(id) ||
+			info.disabled === true ||
+			(typeof info.tagTitle === "string" && info.tagTitle.trim().toLowerCase() === "unavailable") ||
 			info.isInternal === true ||
 			info.apiProvider === "API_PROVIDER_INTERNAL" ||
 			info.isImageOnly === true ||
 			(typeof info.displayName === "string" && /image/i.test(info.displayName))
 		)
 			continue;
-		const fallback = defaults.find((model) => model.id === id);
-		const canonical = canonicalSpec(id);
-		const modelId = canonical?.id ?? id;
-		const modelName =
-			canonical?.name ?? (typeof info.displayName === "string" && info.displayName.trim() ? info.displayName : id);
+
+		const parsed = parseVariant(id, info);
+		const fallback = defaults.find((model) => model.id === parsed.baseId || model.id === id);
 		const contextWindow = positive(info.maxTokens) ? info.maxTokens : (fallback?.contextWindow ?? 128000);
 		const maxTokens = positive(info.maxOutputTokens) ? info.maxOutputTokens : (fallback?.maxTokens ?? 8192);
 		const supportsImages =
 			(typeof info.supportsImages === "boolean" ? info.supportsImages : fallback?.input.includes("image")) ?? false;
 		const supportsThinking =
-			(typeof info.supportsThinking === "boolean" ? info.supportsThinking : fallback?.reasoning) ?? true;
+			(typeof info.supportsThinking === "boolean" ? info.supportsThinking : fallback?.reasoning) ?? false;
 
-		const existing = modelsMap.get(modelId);
+		const existing = groups.get(parsed.baseId);
 		if (existing) {
-			existing.contextWindow = Math.max(existing.contextWindow, contextWindow);
-			existing.maxTokens = Math.max(existing.maxTokens, maxTokens);
-			if (supportsImages && !existing.input.includes("image")) existing.input.push("image");
-			if (supportsThinking) existing.reasoning = true;
+			existing.model.contextWindow = Math.max(existing.model.contextWindow, contextWindow);
+			existing.model.maxTokens = Math.max(existing.model.maxTokens, maxTokens);
+			if (supportsImages && !existing.model.input.includes("image")) existing.model.input.push("image");
+			if (supportsThinking) existing.model.reasoning = true;
+			existing.variants.push(parsed);
 		} else {
-			modelsMap.set(modelId, {
-				id: modelId,
-				name: modelName,
-				provider: "antigravity",
-				api: "antigravity",
-				baseUrl,
-				cost: { ...ZERO_COST },
-				contextWindow,
-				maxTokens,
-				input: supportsImages ? ["text", "image"] : ["text"],
-				reasoning: supportsThinking,
+			groups.set(parsed.baseId, {
+				model: {
+					id: parsed.baseId,
+					name: parsed.baseName,
+					provider: "antigravity",
+					api: "antigravity",
+					baseUrl,
+					cost: { ...ZERO_COST },
+					contextWindow,
+					maxTokens,
+					input: supportsImages ? ["text", "image"] : ["text"],
+					reasoning: supportsThinking,
+				},
+				variants: [parsed],
 			});
 		}
 	}
-	if (!modelsMap.size) throw new Error("Antigravity returned no usable models");
-	return Array.from(modelsMap.values());
+
+	if (!groups.size) throw new Error("Antigravity returned no usable models");
+	return Array.from(groups.values(), ({ model, variants }) => {
+		const thinkingLevelMap = buildThinkingLevelMap(model.id, variants);
+		const compat = buildCompat(variants);
+		return {
+			...model,
+			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+			...(compat ? { compat } : {}),
+		};
+	});
+}
+
+function restoreThinkingLevelMap(value: unknown): ThinkingLevelMap | undefined {
+	if (!record(value)) return undefined;
+	const map: ThinkingLevelMap = {};
+	for (const key of THINKING_MAP_KEYS) {
+		const entry = value[key];
+		if (entry === null || typeof entry === "string") map[key] = entry;
+	}
+	return Object.keys(map).length > 0 ? map : undefined;
+}
+
+function restoreCompat(value: unknown): AntigravityCompat | undefined {
+	if (!record(value)) return undefined;
+	const apiProvider = nonEmptyString(value.apiProvider);
+	const modelProvider = nonEmptyString(value.modelProvider);
+	let variants: Record<string, AntigravityRuntimeVariant> | undefined;
+	if (record(value.variants)) {
+		const parsed: Record<string, AntigravityRuntimeVariant> = {};
+		for (const [id, raw] of Object.entries(value.variants)) {
+			if (!record(raw)) continue;
+			const entry: AntigravityRuntimeVariant = {};
+			const modelEnum = nonEmptyString(raw.modelEnum);
+			if (modelEnum) entry.modelEnum = modelEnum;
+			if (positive(raw.thinkingBudget)) entry.thinkingBudget = raw.thinkingBudget;
+			if (positive(raw.minThinkingBudget)) entry.minThinkingBudget = raw.minThinkingBudget;
+			if (positive(raw.thinkingLevel)) entry.thinkingLevel = raw.thinkingLevel;
+			const vApiProvider = nonEmptyString(raw.apiProvider);
+			if (vApiProvider) entry.apiProvider = vApiProvider;
+			const vModelProvider = nonEmptyString(raw.modelProvider);
+			if (vModelProvider) entry.modelProvider = vModelProvider;
+			if (Object.keys(entry).length > 0) parsed[id] = entry;
+		}
+		if (Object.keys(parsed).length > 0) variants = parsed;
+	}
+	if (!apiProvider && !modelProvider && !variants) return undefined;
+	return {
+		...(apiProvider ? { apiProvider } : {}),
+		...(modelProvider ? { modelProvider } : {}),
+		...(variants ? { variants } : {}),
+	};
 }
 
 function restore(value: unknown, baseUrl: string): NativeModel[] | undefined {
@@ -166,23 +300,29 @@ function restore(value: unknown, baseUrl: string): NativeModel[] | undefined {
 		)
 	)
 		return undefined;
-	return (value as NativeModel[]).map((model) => ({
-		id: model.id,
-		name: model.name,
-		api: "antigravity",
-		provider: "antigravity",
-		contextWindow: model.contextWindow,
-		maxTokens: model.maxTokens,
-		reasoning: model.reasoning,
-		input: [...model.input],
-		baseUrl,
-		cost: { ...ZERO_COST },
-	}));
+	return (value as NativeModel[]).map((model) => {
+		const thinkingLevelMap = restoreThinkingLevelMap(model.thinkingLevelMap);
+		const compat = restoreCompat(model.compat);
+		return {
+			id: model.id,
+			name: model.name,
+			api: "antigravity",
+			provider: "antigravity",
+			contextWindow: model.contextWindow,
+			maxTokens: model.maxTokens,
+			reasoning: model.reasoning,
+			input: [...model.input],
+			baseUrl,
+			cost: { ...ZERO_COST },
+			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+			...(compat ? { compat } : {}),
+		};
+	});
 }
 
 async function fingerprint(value: string): Promise<string> {
 	const hash = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-	return `antigravity-v1:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+	return `antigravity-v2:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export function antigravityProvider(): Provider<"antigravity"> {

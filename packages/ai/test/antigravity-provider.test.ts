@@ -76,14 +76,10 @@ describe("Antigravity provider", () => {
 		expect(fetch).not.toHaveBeenCalled();
 		expect(provider.auth?.oauth?.isSubscription).toBe(true);
 		expect(provider.getModels().map((model) => model.id)).toEqual([
-			"gemini-3.1-pro",
 			"gemini-3.8-flash",
 			"claude-sonnet-4-6",
 			"claude-opus-4-6",
 			"gpt-oss-120b",
-			"gemini-4-argon",
-			"gemini-2.5-flash",
-			"gemini-2.5-pro",
 		]);
 		for (const model of provider.getModels()) {
 			expect(model).toMatchObject({
@@ -140,7 +136,7 @@ describe("Antigravity provider", () => {
 				stored: { models } as unknown as ModelsStoreEntry,
 				allowNetwork: false,
 			});
-			expect(target.getModels()).toHaveLength(8);
+			expect(target.getModels()).toHaveLength(4);
 		}
 	});
 
@@ -207,7 +203,7 @@ describe("Antigravity provider", () => {
 		const provider = antigravityProvider();
 		const run = harness(provider);
 		await run.refresh({ publish: async () => false });
-		expect(provider.getModels()).toHaveLength(8);
+		expect(provider.getModels()).toHaveLength(4);
 		const controller = new AbortController();
 		controller.abort();
 		fetch.mockClear();
@@ -220,7 +216,128 @@ describe("Antigravity provider", () => {
 		});
 		await expect(run.refresh({ signal: active.signal })).rejects.toBeDefined();
 		expect(run.publications).toEqual([]);
-		expect(provider.getModels()).toHaveLength(8);
+		expect(provider.getModels()).toHaveLength(4);
+	});
+
+	it("uses agentModelSorts, skips disabled models, and extracts variant metadata dynamically", async () => {
+		const livePayload = {
+			models: {
+				"future-model-high": {
+					displayName: "Future Model (High)",
+					supportsImages: true,
+					supportsThinking: true,
+					minThinkingBudget: 64,
+					thinkingLevel: 3,
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+					model: "MODEL_PLACEHOLDER_M901",
+					apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
+					modelProvider: "MODEL_PROVIDER_GOOGLE",
+				},
+				"future-model-low": {
+					displayName: "Future Model (Low)",
+					supportsImages: true,
+					supportsThinking: true,
+					minThinkingBudget: 64,
+					thinkingLevel: 1,
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+					model: "MODEL_PLACEHOLDER_M902",
+					apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
+					modelProvider: "MODEL_PROVIDER_GOOGLE",
+				},
+				"future-claude-thinking": {
+					displayName: "Future Claude (Thinking)",
+					supportsImages: true,
+					supportsThinking: true,
+					thinkingBudget: 2048,
+					maxTokens: 250000,
+					maxOutputTokens: 64000,
+					model: "MODEL_PLACEHOLDER_M903",
+					apiProvider: "API_PROVIDER_ANTHROPIC_VERTEX",
+					modelProvider: "MODEL_PROVIDER_ANTHROPIC",
+				},
+				"future-disabled": {
+					displayName: "Future Disabled",
+					disabled: true,
+					tagTitle: "Unavailable",
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+				},
+				"internal-sonar": {
+					supportsThinking: true,
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+				},
+				"legacy-broken": {
+					displayName: "Legacy Broken",
+					maxTokens: 1048576,
+					maxOutputTokens: 65536,
+				},
+			},
+			defaultAgentModelId: "future-model-high",
+			agentModelSorts: [
+				{
+					displayName: "Recommended",
+					groups: [
+						{
+							modelIds: ["future-model-high", "future-model-low", "future-claude-thinking", "future-disabled"],
+						},
+					],
+				},
+			],
+		};
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(livePayload));
+		const provider = antigravityProvider();
+		const run = harness(provider);
+		await run.refresh();
+		const models = provider.getModels();
+		expect(models.map((m) => ({ id: m.id, name: m.name }))).toEqual([
+			{ id: "future-model", name: "Future Model" },
+			{ id: "future-claude", name: "Future Claude" },
+		]);
+		expect(models[0].thinkingLevelMap).toEqual({
+			off: "future-model-low",
+			minimal: "future-model-low",
+			low: "future-model-low",
+			medium: "future-model-high",
+			high: "future-model-high",
+		});
+		expect(models[0].compat).toEqual({
+			apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
+			modelProvider: "MODEL_PROVIDER_GOOGLE",
+			variants: {
+				"future-model-high": {
+					modelEnum: "MODEL_PLACEHOLDER_M901",
+					minThinkingBudget: 64,
+					thinkingLevel: 3,
+					apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
+					modelProvider: "MODEL_PROVIDER_GOOGLE",
+				},
+				"future-model-low": {
+					modelEnum: "MODEL_PLACEHOLDER_M902",
+					minThinkingBudget: 64,
+					thinkingLevel: 1,
+					apiProvider: "API_PROVIDER_GOOGLE_GEMINI",
+					modelProvider: "MODEL_PROVIDER_GOOGLE",
+				},
+			},
+		});
+		expect(models[1].thinkingLevelMap).toEqual({
+			off: "future-claude-thinking",
+			minimal: "future-claude-thinking",
+			low: "future-claude-thinking",
+			medium: "future-claude-thinking",
+			high: "future-claude-thinking",
+		});
+		expect(models[1].compat?.variants?.["future-claude-thinking"]).toMatchObject({
+			modelEnum: "MODEL_PLACEHOLDER_M903",
+			thinkingBudget: 2048,
+		});
+
+		const restored = antigravityProvider();
+		await harness(restored).refresh({ stored: run.stored, allowNetwork: false });
+		expect(restored.getModels()).toEqual(models);
 	});
 });
 

@@ -312,7 +312,8 @@ async function fetchAntigravityUsage(raw: string): Promise<AntigravityUsage> {
 		const seenModels = new Set<string>();
 		for (const [id, value] of Object.entries(catalog ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
 			const model = record(value);
-			if (!model || model.isInternal === true || /^(chat_|tab_|MODEL_)/i.test(id)) continue;
+			if (!model || model.disabled === true || model.isInternal === true || /^(chat_|tab_|MODEL_)/i.test(id))
+				continue;
 			const quota = fractionQuota(record(model.quotaInfo));
 			if (!quota) continue;
 			if (usage.groups.length > 0 && existingFractions.has(quota.remaining)) continue;

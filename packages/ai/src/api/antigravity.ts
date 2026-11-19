@@ -1,6 +1,7 @@
 import type { Content, GenerateContentResponse } from "@google/genai";
 import { calculateCost } from "../models.ts";
 import type {
+	AntigravityRuntimeVariant,
 	AssistantMessage,
 	Model,
 	SimpleStreamOptions,
@@ -56,7 +57,22 @@ export interface AntigravityOptions extends StreamOptions {
 	reasoning?: ThinkingLevel | "off";
 }
 
-export function resolveAntigravityModel(id: string, effort: AntigravityOptions["reasoning"]): string {
+export function resolveAntigravityModel(
+	modelOrId: Model<"antigravity"> | string,
+	effort: AntigravityOptions["reasoning"],
+): string {
+	if (typeof modelOrId !== "string" && modelOrId.thinkingLevelMap) {
+		const level = effort ?? "low";
+		const mapped =
+			modelOrId.thinkingLevelMap[level] ??
+			(level === "xhigh" || level === "max"
+				? modelOrId.thinkingLevelMap.high
+				: level === "minimal" || level === "off"
+					? modelOrId.thinkingLevelMap.low
+					: undefined);
+		if (typeof mapped === "string" && mapped) return mapped;
+	}
+	const id = typeof modelOrId === "string" ? modelOrId : modelOrId.id;
 	const high = effort === "high" || effort === "xhigh" || effort === "max";
 	if (/^gemini-3\.[678]-flash$/.test(id)) return `${id}-${high ? "high" : effort === "medium" ? "medium" : "low"}`;
 	if (id === "gemini-3.5-flash")
@@ -68,8 +84,6 @@ export function resolveAntigravityModel(id: string, effort: AntigravityOptions["
 	if (id === "gemini-3.1-pro") return high ? "gemini-pro-agent" : "gemini-3.1-pro-low";
 	if (id === "claude-opus-4-6") return "claude-opus-4-6-thinking";
 	if (id === "gpt-oss-120b") return "gpt-oss-120b-medium";
-	if (id === "gemini-4-argon") return "gemini-4-argon-disabled";
-	if (id === "gemini-2.5-flash") return effort && effort !== "off" ? "gemini-2.5-flash-thinking" : "gemini-2.5-flash";
 	return id;
 }
 
@@ -179,19 +193,23 @@ async function sessionMetadata(context: TranscriptContext, explicit?: string) {
 	};
 }
 
-function thinkingConfig(id: string, effort: AntigravityOptions["reasoning"]) {
+function thinkingConfig(id: string, effort: AntigravityOptions["reasoning"], variant?: AntigravityRuntimeVariant) {
 	const enabled = !!effort && effort !== "off";
-	if (!enabled)
-		return id.includes("argon") || id.startsWith("gemini-4")
-			? undefined
-			: { includeThoughts: false, thinkingBudget: 0 };
+	if (!enabled) return id.startsWith("gemini-4") ? undefined : { includeThoughts: false, thinkingBudget: 0 };
+	if (typeof variant?.thinkingBudget === "number" && variant.thinkingBudget > 0) {
+		return { includeThoughts: true, thinkingBudget: variant.thinkingBudget };
+	}
 	const high = effort === "high" || effort === "xhigh" || effort === "max";
 	let budget = high ? -1 : effort === "medium" ? 4000 : 1000;
-	if (id.startsWith("claude-")) budget = 1024;
-	else if (id.startsWith("gpt-oss-")) budget = 8192;
-	else if (id.startsWith("gemini-3.1-pro") || id === "gemini-pro-agent") budget = high ? 10001 : 1001;
-	else if (id.startsWith("gemini-3.5-flash") || id === "gemini-3-flash-agent")
-		budget = high ? 10000 : effort === "medium" ? 4000 : 1000;
+	if (typeof variant?.minThinkingBudget === "number" && variant.minThinkingBudget > 0) {
+		if (budget > 0) budget = Math.max(budget, variant.minThinkingBudget);
+	} else if (!variant) {
+		if (id.startsWith("claude-")) budget = 1024;
+		else if (id.startsWith("gpt-oss-")) budget = 8192;
+		else if (id.startsWith("gemini-3.1-pro") || id === "gemini-pro-agent") budget = high ? 10001 : 1001;
+		else if (id.startsWith("gemini-3.5-flash") || id === "gemini-3-flash-agent")
+			budget = high ? 10000 : effort === "medium" ? 4000 : 1000;
+	}
 	return { includeThoughts: true, thinkingBudget: budget };
 }
 
@@ -317,9 +335,20 @@ async function buildPayload(
 ) {
 	const normalized = collapseSystemMessages(context);
 	const contents = antigravityContents(model, normalized);
-	const runtimeId = resolveAntigravityModel(model.id, options.reasoning);
+	const runtimeId = resolveAntigravityModel(model, options.reasoning);
+	const variant = model.compat?.variants?.[runtimeId];
+	const apiProvider = variant?.apiProvider ?? model.compat?.apiProvider;
+	const modelProvider = variant?.modelProvider ?? model.compat?.modelProvider;
+	const isClaude =
+		modelProvider === "MODEL_PROVIDER_ANTHROPIC" ||
+		apiProvider === "API_PROVIDER_ANTHROPIC_VERTEX" ||
+		model.id.startsWith("claude-");
+	const isGemini =
+		modelProvider === "MODEL_PROVIDER_GOOGLE" ||
+		apiProvider === "API_PROVIDER_GOOGLE_GEMINI" ||
+		model.id.startsWith("gemini-");
 	const tools = getCurrentTools(normalized.messages);
-	const legacy = /^(claude-|gpt-oss-)/.test(model.id);
+	const legacy = !isGemini;
 	const strict = supportsGoogleStrictToolSampling(model.id);
 	const declarations = convertTools(tools, false, strict);
 	if (legacy)
@@ -338,11 +367,12 @@ async function buildPayload(
 		last_step_index: String(Math.max(0, contents.length - 1)),
 		request_id: `${trajectoryId}-${requestIndex}`,
 		trajectory_id: trajectoryId,
-		used_claude: String(model.id.startsWith("claude-")),
-		used_claude_conservative: String(model.id.startsWith("claude-")),
-		used_non_gemini_model: String(!model.id.startsWith("gemini-")),
+		used_claude: String(isClaude),
+		used_claude_conservative: String(isClaude),
+		used_non_gemini_model: String(!isGemini),
 	};
-	if (modelEnums[runtimeId]) labels.model_enum = modelEnums[runtimeId];
+	const modelEnum = variant?.modelEnum ?? modelEnums[runtimeId];
+	if (modelEnum) labels.model_enum = modelEnum;
 	if (step > 1) labels.last_execution_id = await stableUuid(`antigravity:exec:${trajectoryId}:${step - 1}`);
 	const mode = tools.length ? resolveGoogleFunctionCallingMode(tools, options.toolChoice, strict) : undefined;
 	return {
@@ -366,7 +396,7 @@ async function buildPayload(
 					temperature: options.temperature,
 				}),
 				...(model.reasoning && {
-					thinkingConfig: thinkingConfig(runtimeId, options.reasoning),
+					thinkingConfig: thinkingConfig(runtimeId, options.reasoning, variant),
 				}),
 			},
 		},

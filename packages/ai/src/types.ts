@@ -864,6 +864,21 @@ export interface BaseModel<TApi extends string> {
 	headers?: Record<string, string>;
 }
 
+export interface AntigravityRuntimeVariant {
+	modelEnum?: string;
+	thinkingBudget?: number;
+	minThinkingBudget?: number;
+	thinkingLevel?: number;
+	apiProvider?: string;
+	modelProvider?: string;
+}
+
+export interface AntigravityCompat {
+	apiProvider?: string;
+	modelProvider?: string;
+	variants?: Record<string, AntigravityRuntimeVariant>;
+}
+
 /** Chat model: usable with `stream()` and friends. */
 export interface Model<TApi extends Api> extends BaseModel<TApi> {
 	/**
@@ -897,7 +912,9 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 					? BedrockCompat
 					: TApi extends "mistral-conversations"
 						? MistralConversationsCompat
-						: never;
+						: TApi extends "antigravity"
+							? AntigravityCompat
+							: never;
 }
 
 /** Image-generation model: usable with `generateImages()` only. */
