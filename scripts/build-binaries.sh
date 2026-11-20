@@ -63,6 +63,7 @@ for platform in "${PLATFORMS[@]}"; do
 
     # workers need explicit entrypoints; never autoload project preloads or .env.
     bun build --compile --no-compile-autoload-bunfig --no-compile-autoload-dotenv \
+        --compile-autoload-package-json \
         --external canvas --external 'chromium-bidi/*' \
         --target="$target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts \
         ./src/extensions/codemode/worker.ts --outfile "$output/pi"

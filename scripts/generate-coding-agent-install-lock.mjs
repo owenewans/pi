@@ -19,7 +19,7 @@ const allowedInstallScriptPackages = new Map([
 		"@ast-grep/cli@0.51.0",
 		"postinstall only hardlinks or copies the matching installed native binary; no downloads or compilation; hydration still uses --ignore-scripts",
 	],
-	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
+	["@google/genai@2.32.0", "preinstall is a no-op in the published package"],
 	[
 		"protobufjs@7.6.6",
 		"postinstall only warns about protobufjs version scheme mismatches",

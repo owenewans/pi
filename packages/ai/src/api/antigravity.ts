@@ -5,6 +5,7 @@ import type {
 	AssistantMessage,
 	Model,
 	SimpleStreamOptions,
+	StopReason,
 	StreamFunction,
 	StreamOptions,
 	TextContent,
@@ -21,11 +22,22 @@ import { collapseSystemMessages, getCurrentTools, getInitialSystemMessage } from
 import {
 	convertMessages,
 	convertTools,
-	mapStopReasonString,
 	resolveGoogleFunctionCallingMode,
 	supportsGoogleStrictToolSampling,
 } from "./google-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
+
+function mapStopReasonString(reason: string): StopReason {
+	switch (reason) {
+		case "STOP":
+			return "stop";
+		case "MAX_TOKENS":
+		case "CONTINUATION":
+			return "length";
+		default:
+			return "error";
+	}
+}
 
 /*
  * Envelope, thinking budgets and legacy schema rules adapted from pi-antigravity
