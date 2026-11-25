@@ -22,6 +22,7 @@ import {
 	type ToolResultContentBlock,
 	ToolResultStatus,
 } from "@aws-sdk/client-bedrock-runtime";
+import { type DefaultProviderInit, defaultProvider } from "@aws-sdk/credential-provider-node";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { BuildMiddleware, DeserializeMiddleware, DocumentType, HttpResponse, MetadataBearer } from "@smithy/types";
 import { createProviderProxyAgents } from "../internal/node-proxy-agents.ts";
@@ -249,8 +250,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
 				const proxyAgents = createProviderProxyAgents(model.baseUrl, options.env);
 				// smithy's default HTTP/2 transport does not use Node proxy agents.
-				if (proxyAgents) config.requestHandler = new NodeHttpHandler(proxyAgents);
-				else if (getProviderEnvValue("AWS_BEDROCK_FORCE_HTTP1", options.env) === "1") {
+				if (proxyAgents) {
+					const requestHandler = new NodeHttpHandler(proxyAgents);
+					config.requestHandler = requestHandler;
+					config.credentialDefaultProvider = (init: DefaultProviderInit) =>
+						defaultProvider({ ...init, clientConfig: { ...init.clientConfig, requestHandler } });
+				} else if (getProviderEnvValue("AWS_BEDROCK_FORCE_HTTP1", options.env) === "1") {
 					config.requestHandler = new NodeHttpHandler();
 				}
 			}

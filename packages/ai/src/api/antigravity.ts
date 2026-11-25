@@ -361,7 +361,7 @@ async function buildPayload(
 		model.id.startsWith("gemini-");
 	const tools = getCurrentTools(normalized.messages);
 	const legacy = !isGemini;
-	const strict = supportsGoogleStrictToolSampling(model.id);
+	const strict = supportsGoogleStrictToolSampling(model);
 	const declarations = convertTools(tools, false, strict);
 	if (legacy)
 		for (const declaration of declarations?.[0].functionDeclarations ?? []) {
