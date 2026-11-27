@@ -40,7 +40,7 @@ describe("agent profile", () => {
 		expect(() => readProfile(path)).toThrow(/^Agent profile contains invalid JSON$/);
 	});
 
-	it("renders only configured identity fields without duplicating skill instructions", () => {
+	it("renders configured identity fields and core system rules", () => {
 		const prompt = renderProfilePrompt({
 			name: "fixture",
 			website: "example.org",
@@ -48,7 +48,7 @@ describe("agent profile", () => {
 			github: "github.com/example",
 			codeberg: "codeberg.org/example",
 		});
-		expect(prompt).toBe(
+		expect(prompt).toContain(
 			[
 				"you are the AI agent of fixture.",
 				"website: example.org",
@@ -57,6 +57,12 @@ describe("agent profile", () => {
 				"codeberg: codeberg.org/example",
 			].join("\n"),
 		);
-		expect(renderProfilePrompt({ name: "fixture" })).toBe("you are the AI agent of fixture.");
+		expect(prompt).toContain("follow KISS, SOLID");
+		expect(prompt).toContain("ASCII hyphen (-)");
+		expect(prompt).toContain("omit the final period in chat messages");
+
+		const minimal = renderProfilePrompt({ name: "fixture" });
+		expect(minimal.startsWith("you are the AI agent of fixture.\n\n")).toBe(true);
+		expect(minimal).not.toContain("website:");
 	});
 });

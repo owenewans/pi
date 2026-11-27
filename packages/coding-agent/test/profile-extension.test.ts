@@ -51,14 +51,12 @@ describe("identity setup", () => {
 		expect(loaded.diagnostics).toEqual([]);
 		expect(loaded.skills.map((skill) => skill.name).sort()).toEqual([
 			"attached-repositories",
-			"coding-style",
 			"commit",
 			"documentation",
 			"humanizer",
 			"init",
 			"learn-from-feedback",
 			"readme",
-			"stop-slop",
 		]);
 	});
 
